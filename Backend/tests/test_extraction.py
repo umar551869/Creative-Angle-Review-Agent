@@ -19,6 +19,25 @@ from auditor import runtime  # noqa: E402
 
 NB = ROOT / 'Phase 7' / 'phases_1_to_7_BATCH.ipynb'
 
+# THE BACKEND MUST VERIFY ITSELF WITHOUT THE NOTEBOOK.
+#
+# auditor/ is generated FROM that notebook, but the notebook lives outside
+# Backend/ and is not part of what gets deployed -- a container, a fresh clone
+# of just this directory, or a repo where it has been removed all lack it. When
+# the suite hard-required it, every such checkout failed two tests with
+# FileNotFoundError, which says nothing about whether the backend works.
+#
+# So: checks about the PACKAGE always run. Checks that compare the package
+# against its source notebook run only when the notebook is there, and skip
+# with a reason when it is not -- never silently, because a parity guard that
+# quietly stops guarding is worse than one that is absent.
+NB_PRESENT = NB.is_file()
+_NEEDS_NB = pytest.mark.skipif(
+    not NB_PRESENT,
+    reason=f'notebook-parity check: {NB.name} is not present (the backend is '
+           f'standalone here). Regenerate with tools/extract_from_notebook.py '
+           f'to re-enable.')
+
 
 @pytest.fixture(scope='module')
 def ns():
@@ -101,12 +120,18 @@ def test_decorators_survive_extraction():
     field was a dataclasses.Field object instead of its value. Nothing raised
     until something tried to USE a threshold.
     """
-    nb_dec = sum(len(re.findall(r'^@\w', s, re.M))
-                 for s in [''.join(c['source'])
-                           for c in json.loads(NB.read_text(encoding='utf-8'))
-                           ['cells'] if c['cell_type'] == 'code'])
+    # The ASSERTION is package-side and stands on its own. Only the comparison
+    # figure needs the notebook, so a backend checked out without it still
+    # gets the guard rather than an error about a missing file.
     pkg_dec = sum(len(re.findall(r'^@\w', p.read_text(encoding='utf-8'), re.M))
                   for p in (HERE / 'auditor').rglob('*.py'))
+    nb_dec = '?'
+    if NB_PRESENT:
+        nb_dec = sum(len(re.findall(r'^@\w', s, re.M))
+                     for s in [''.join(c['source'])
+                               for c in json.loads(
+                                   NB.read_text(encoding='utf-8'))['cells']
+                               if c['cell_type'] == 'code'])
     assert pkg_dec >= 38, (
         f'only {pkg_dec} module-level decorators in the package; the notebook '
         f'has {nb_dec}. Decorators are being stripped.')
@@ -154,6 +179,7 @@ def test_notebook_namespace_is_a_real_module():
     assert mod.__dict__ is runtime.NS, 'the module and NS have diverged'
 
 
+@_NEEDS_NB
 def test_every_notebook_cell_is_a_decision():
     """No cell may be silently forgotten."""
     sys.path.insert(0, str(HERE / 'tools'))

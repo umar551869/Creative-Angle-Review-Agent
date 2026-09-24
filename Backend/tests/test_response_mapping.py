@@ -103,6 +103,54 @@ def test_the_notebook_verdict_names_are_translated():
     assert out.decided_by == 'L3', 'which rung decided it must survive'
 
 
+def test_EVERY_verdict_field_survives_a_real_notebook_verdict():
+    """The whole class, not one field at a time.
+
+    `reason`->`rationale` and `layer`->`decided_by` were each found by reading
+    a live response by hand, months apart. Auditing every field of every nested
+    model at once then turned up a third, `group`->`group_id`, that both
+    hand-readings had missed.
+
+    This fixture carries EVERY key a real notebook verdict has (taken from a
+    live artifact), so a schema field that nothing populates fails here rather
+    than being discovered in production as a null.
+    """
+    from app.schemas import VerdictOut
+    from app.services.pipeline import _verdict_out
+
+    raw = {
+        'alignment': 'exact',
+        'alignment_reason': 'Derived at L1, not judged by a model',
+        'candidates_considered': 10,
+        'confidence': 1.0,
+        'confidence_kind': 'derived',
+        'escalated_from': [],
+        'evidence_ids': ['ev_9a0acdc5b8'],
+        'evidence_mode': 'speech_or_text',
+        'examined_ids': ['ev_9a0acdc5b8', 'ev_eb1502c5ff'],
+        'flags': ['GROUP_SELECTED:creative_concepts(4 options)'],
+        'group': 'creative_concepts',
+        'group_label': 'Creative Concepts',
+        'group_mode': 'one_of',
+        'layer': 'L1',
+        'ordinal': 1,
+        'priority': 'high',
+        'reason': "speech evidence at 0.00s matches 'stopped giving my kids'",
+        'requirement_id': 'r_ab5a4f45',
+        'requirement_label': "Open video using concept 'Why I Stopped'",
+        'status': 'PASS',
+        'weight': 2.0,
+    }
+    out = VerdictOut(**_verdict_out(raw))
+
+    unset = [f for f in VerdictOut.model_fields
+             if getattr(out, f) in (None, '', [], {})]
+    assert not unset, (
+        f'{unset} is declared by VerdictOut but nothing populates it from a '
+        f'real notebook verdict. pydantic drops an unmatched key silently, so '
+        f'this reaches a caller as a null with no error anywhere.')
+
+
 def test_verdict_translation_prefers_an_explicit_schema_name():
     """If the notebook ever adopts the schema's names, do not clobber them."""
     from app.services.pipeline import _verdict_out

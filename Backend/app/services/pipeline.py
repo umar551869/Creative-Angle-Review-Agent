@@ -183,7 +183,12 @@ def _verdict_out(v: dict) -> dict:
     """
     return {**v,
             'rationale': v.get('rationale') or v.get('reason') or '',
-            'decided_by': v.get('decided_by') or v.get('layer')}
+            'decided_by': v.get('decided_by') or v.get('layer'),
+            # `group` is the notebook's name; the schema says `group_id`. Found
+            # by auditing every field of every nested model against a live
+            # response instead of reading one by hand -- which is how the two
+            # above were found, one at a time.
+            'group_id': v.get('group_id') or v.get('group')}
 
 
 def audit_one(video: dict, brief: dict, *, force: bool = False,
