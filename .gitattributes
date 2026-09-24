@@ -1,0 +1,12 @@
+# Linux executes some of these files. A CR makes a shell script fail with
+# 'bad interpreter: No such file or directory', and makes a .env value
+# carry an invisible trailing \r that fails as a 401 looking exactly like
+# a wrong key. Normalise on checkout so a Windows clone cannot cause it.
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Notebooks are large JSON; keep them out of diffs.
+*.ipynb -diff

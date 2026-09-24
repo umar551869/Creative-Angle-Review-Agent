@@ -1,0 +1,32 @@
+# Local environment for phases_1_to_7_gemini_vision.ipynb
+# Windows 11, CPU only. Generated from a verified working install.
+#
+# NOT pip-installable, install separately:
+#   ffmpeg + ffprobe   winget install Gyan.FFmpeg
+#
+# python 3.13.15
+
+torch==2.14.0+cpu               # video/audio tensors, and what sentence-transformers runs on
+torchvision==0.29.0             # pinned to torch; the notebook asserts the pair agree
+av==18.1.0                      # Phase 1 decode
+opencv-python-headless==5.0.0.93 # Phase 1 frame extraction / JPEG
+numpy==2.5.3
+faster-whisper==1.2.1           # Phase 2 ASR
+ctranslate2==4.8.2              # the engine under faster-whisper
+silero-vad==6.2.1               # voice activity detection
+rapidocr-onnxruntime==1.2.3     # Phase 2 OCR
+onnxruntime==1.30.0             # the engine under rapidocr
+sentence-transformers==6.0.1    # Phase 6 L2 embeddings (bge-small)
+transformers==5.17.0            # ASR fallback path
+pydantic==2.13.5                # artifact schemas
+rapidfuzz==3.14.6               # fuzzy matching in the compiler and evaluator
+json-repair==0.63.4             # model JSON repair
+google-genai==2.23.0            # Gemini, the vision + L3 backend
+openai==3.14.0                  # paid fallback, budgeted
+wordninja==2.0.0                # OCR word splitting
+pillow==12.3.0
+requests==2.34.2
+pandas==3.0.6
+matplotlib==3.11.2
+plotly==7.1.0                   # Phase 7 figures
+ipykernel==7.3.0                # to run this as a local notebook

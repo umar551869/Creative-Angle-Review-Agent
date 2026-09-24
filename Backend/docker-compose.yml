@@ -1,0 +1,37 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        BAKE_MODELS: "true"
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      AUDITOR_DATA_ROOT: /data
+      HF_HOME: /models
+      AUDITOR_LOG_JSON: "true"
+    volumes:
+      # Named volumes, NOT bind mounts. artifacts/ is the content-addressed
+      # cache and models/ is ~1.8 GB of weights -- both must survive a
+      # container replacement or every run pays full price again.
+      - audit-data:/data
+      - audit-models:/models
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          # ~4 GB working set: CTranslate2 int8 turbo ~1 GB, torch ~1 GB
+          # resident, plus ONNX, frames and the video itself.
+          memory: 8G
+
+volumes:
+  audit-data:
+  audit-models:

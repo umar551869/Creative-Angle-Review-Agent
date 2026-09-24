@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# SECRETS. Never, under any name.
+#
+# Backend/.env currently holds a live Gemini key and a live Hugging Face
+# token. A key in git history outlives the file that held it, and rewriting a
+# pushed history is far harder than not pushing it.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*cookies.txt
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# ---------------------------------------------------------------------------
+# PIPELINE WORKING DATA. Regenerable, and large.
+#
+# work/ is 640 MB of downloaded videos, extracted frames and export tarballs.
+# Backend/data/ is 1.7 GB, nearly all of it cached model weights. Both are
+# content-addressed or downloadable; neither is source.
+# ---------------------------------------------------------------------------
+work/
+Backend/data/
+data/
+*.tar.gz
+*.zip
+
+# Videos and audio -- inputs, never source.
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.mkv
+*.avi
+*.wav
+
+# ---------------------------------------------------------------------------
+# ENVIRONMENTS AND CACHES
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ---------------------------------------------------------------------------
+# LOCAL SAFETY COPIES
+#
+# backups/ holds dated snapshots of notebooks taken before risky edits. They
+# are a local undo, not history -- git is the history now.
+# ---------------------------------------------------------------------------
+backups/
+*.bak
+*.bak.ipynb
+*.prefix.ipynb
+
+# ---------------------------------------------------------------------------
+# EDITOR / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Notebook checkpoints
+.ipynb_checkpoints/

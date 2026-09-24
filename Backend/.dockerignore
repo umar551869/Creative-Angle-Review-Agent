@@ -1,0 +1,19 @@
+# Everything the image does not need. Keeping data/ out matters most: it
+# holds videos and artifacts and would otherwise be copied into the build
+# context on every build.
+.venv/
+data/
+.env
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+tests/
+docs/
+*.md
+!README.md
+deploy/
+
