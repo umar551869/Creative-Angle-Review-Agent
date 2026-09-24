@@ -102,6 +102,22 @@ class Settings:
         # does not make the compiler deterministic; it keeps what a majority
         # of runs agreed on and reports the rest as COMPILE_UNSTABLE.
         self.brief_compile_runs = _int('AUDITOR_BRIEF_COMPILE_RUNS', 3)
+        # RECOMPILE THE BRIEF ON EVERY JOB, instead of reusing the frozen
+        # compile. Off by default, and worth understanding before turning on.
+        #
+        # The compiler is not deterministic: one brief produced 20, 27 and 28
+        # requirements across runs at temperature 0. The requirement set IS
+        # the contract a score means something against, so recompiling means
+        # two videos submitted an hour apart are measured against different
+        # contracts and their scores are not comparable -- with nothing in
+        # the output saying so. It also costs a measured ~59 s per job (3
+        # consensus runs) and three more model calls.
+        #
+        # It is the right setting when the brief document itself is being
+        # edited between runs, because then the frozen compile is stale and
+        # comparability with it is not wanted.
+        self.always_recompile_brief = _flag('AUDITOR_ALWAYS_RECOMPILE_BRIEF',
+                                            False)
         self.brief_keep_threshold = float(
             os.environ.get('AUDITOR_BRIEF_KEEP_THRESHOLD', '0.5'))
         # §0.3: VISION_PROVIDER = 'gemini'. 'local' needs a GPU and the Qwen

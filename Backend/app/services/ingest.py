@@ -290,6 +290,11 @@ def compile_brief(text: str, *, runs: int, keep_threshold: float,
         compiled.get('requirements') or [])
     key = compiled.get('cache_key') or bh[:16]
     ns['write_json'](bdir / f'requirements__{key}.json', compiled)
+    # MOVE THE POINTER. Writing the file is not enough and must not be:
+    # selection is by pointer now, precisely so that a compile appearing on
+    # disk cannot become the contract by itself. This line is the deliberate
+    # act that `recompile=True` exists to perform.
+    freeze_pointer(ns, bdir, compiled)
     log.info('brief %s: compiled in %.1fs -> %s requirements (%d run(s), '
              'frozen)', bh[:12], time.time() - t0,
              (compiled.get('stats') or {}).get('requirements'), runs)
@@ -354,17 +359,84 @@ def use_precompiled(compiled: dict,
     return out
 
 
-def _frozen_compile(ns: dict, bdir: Path) -> Optional[dict]:
+FROZEN_POINTER = 'FROZEN.json'
+
+
+def _approved_compiles(ns: dict, bdir: Path) -> list:
+    """Every approved compile in this brief's directory, oldest first."""
     try:
         paths = sorted(bdir.glob('requirements__*.json'),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
+                       key=lambda p: p.stat().st_mtime)
     except OSError:
-        return None
+        return []
+    out = []
     for p in paths:
         c = ns['read_json'](p)
         if c and c.get('approved') and c.get('status') == 'OK':
-            return c
-    return None
+            out.append((p, c))
+    return out
+
+
+def freeze_pointer(ns: dict, bdir: Path, compiled: dict) -> None:
+    """Record WHICH compile is the contract for this brief."""
+    try:
+        ns['write_json'](bdir / FROZEN_POINTER, {
+            'cache_key': compiled.get('cache_key'),
+            'requirements': len(compiled.get('requirements') or []),
+            'approved_digest': compiled.get('approved_digest'),
+            'frozen_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        })
+    except OSError as exc:
+        log.warning('could not write the frozen-compile pointer (%s); '
+                    'selection falls back to the FIRST approved compile', exc)
+
+
+def _frozen_compile(ns: dict, bdir: Path) -> Optional[dict]:
+    """The contract for this brief -- an explicit choice, not an accident.
+
+    THIS USED TO RETURN THE NEWEST APPROVED COMPILE, which quietly made
+    "the first compile is frozen and reused" false. The compiler is
+    non-deterministic (20, 27 and 28 requirements observed from one brief),
+    so ANY later compile -- a deliberate recompile, a measurement, a second
+    process racing the first -- silently became the contract, and every score
+    from before it stopped being comparable with every score after, with
+    nothing in the output saying so.
+
+    That is exactly the failure the freeze exists to prevent, and it was
+    reachable by accident. Measured here: timing a cold compile replaced a
+    28-requirement contract with a 27-requirement one, and the next ordinary
+    run would have used it.
+
+    Now: FROZEN.json names the active compile. Without it, the OLDEST approved
+    compile wins -- "first" as the docstring always claimed -- and the pointer
+    is written so the choice is explicit from then on. `recompile=True` is the
+    only thing that moves it.
+    """
+    approved = _approved_compiles(ns, bdir)
+    if not approved:
+        return None
+
+    try:
+        ptr = ns['read_json'](bdir / FROZEN_POINTER) or {}
+    except Exception:
+        ptr = {}
+    want = ptr.get('cache_key')
+    if want:
+        for _p, c in approved:
+            if c.get('cache_key') == want:
+                return c
+        log.warning('FROZEN.json names %s but no approved compile has that '
+                    'key; falling back to the first one', want)
+
+    path, first = approved[0]
+    if len(approved) > 1:
+        log.info('%d approved compiles for this brief; using the FIRST (%s, '
+                 '%d requirements). Later ones exist but do not silently '
+                 'become the contract.', len(approved),
+                 first.get('cache_key'),
+                 len(first.get('requirements') or []))
+    freeze_pointer(ns, bdir, first)
+    return first
 
 
 def brief_summary(compiled: dict, origin: str) -> dict:

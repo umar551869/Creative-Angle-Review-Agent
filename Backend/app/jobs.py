@@ -355,7 +355,8 @@ class JobStore:
                 compiled = ingest.compile_brief(
                     loaded['text'], runs=s.brief_compile_runs,
                     keep_threshold=s.brief_keep_threshold,
-                    recompile=bool(p.get('recompile')))
+                    recompile=bool(p.get('recompile'))
+                    or s.always_recompile_brief)
         compiled.setdefault('origin', origin)
         job.brief = ingest.brief_summary(compiled, origin)
         # HAND THE CONTRACT BACK when there is no durable place to keep it.
