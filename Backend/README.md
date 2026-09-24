@@ -14,10 +14,12 @@ the first objective; everything else came after.
 ## 1. What it does
 
 ```
-POST /analyze  { video_urls: [...], brief_url: "https://docs.google.com/..." }
+POST /analyze         { video_urls: [...], brief_url: "https://docs.google…" }
+POST /analyze/upload  files=@clip.mp4 …   brief_url=…      (you send the bytes)
       │
       ├─ brief      fetch the Google Doc → compile to requirements → FREEZE
       ├─ ingest     yt-dlp each URL into this job's inbox
+      │             (uploads skip this: the files are already there)
       ├─ phase 1    ffprobe → preflight → scene detect → sample → frames+audio
       ├─ phase 2    faster-whisper ASR, RapidOCR on selected frames
       ├─ phase 3    frames → Gemini → timestamped visual events
@@ -123,15 +125,25 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 The default torch wheel pulls ~2 GB of CUDA libraries this pipeline never
 uses. Vision is hosted; Whisper and BGE both run on CPU.
 
-**ffmpeg and ffprobe must be on PATH.** They are not pip-installable, and
-without them the server starts, `/health` says ok, and every job dies in
-Phase 1.
+**ffmpeg and ffprobe.** Not pip-installable, and the first thing a job
+touches — Phase 1 probes the container before it decodes anything.
 
 ```bash
 winget install Gyan.FFmpeg     # Windows
 brew install ffmpeg            # macOS
 apt-get install ffmpeg         # Linux
 ```
+
+`/ready` refuses to report ready without them and names the missing binary, so
+this fails at startup rather than fifty seconds into a job.
+
+**On Windows, installing is not the same as being visible.** `winget` appends
+its directory to the *user* PATH, which a shell, terminal or service that was
+already running never picks up — so `ffmpeg -version` works in a new terminal
+while the server sees nothing, and the two observations look contradictory.
+The server searches PATH, then the usual install locations, and extends its
+own PATH if it finds them; it logs exactly what it did. Set
+`AUDITOR_FFMPEG_DIR` only for an unusual install.
 
 ```bash
 cp .env.example .env    # then set GEMINI_API_KEY
@@ -246,6 +258,35 @@ curl -X POST http://localhost:8000/analyze \
 { "job_id": "9f3c2a1b4d5e6f70", "status": "queued", "poll": "/jobs/9f3c2a1b4d5e6f70" }
 ```
 
+### Submit a job by uploading the files instead
+
+Same pipeline, different door. Use this when the client already has the video
+— it removes the one stage that fails for reasons this server does not
+control, since TikTok refuses anonymous downloads from datacentre IPs far more
+readily than from residential ones.
+
+```bash
+curl -X POST http://localhost:8000/analyze/upload \
+  -F 'files=@7674625522189618445.mp4' \
+  -F 'files=@7678124132499803422.mp4' \
+  -F 'brief_url=https://docs.google.com/document/d/1uWKQ.../edit' \
+  -F 'label=pill organiser, week 1'
+```
+
+Identical `202` + `job_id`, and you poll the same way.
+
+**Name each file after its video id** (`7674625522189618445.mp4`). `source` on
+every result row is the filename, and that is what maps a row back to its
+original link — an opaque name still audits correctly, it just cannot show
+which URL it came from. Pass `source_urls` (a JSON array) if you want the
+mapping without renaming.
+
+`compiled_brief` and `source_urls` are JSON **strings** here, because multipart
+cannot nest an object. Limits are `AUDITOR_MAX_VIDEO_BYTES` per file and
+`AUDITOR_MAX_UPLOAD_BYTES` per request; both are separate from the small JSON
+body limit, and files are checked for a real video container before the job is
+queued.
+
 ### Poll
 
 ```bash
@@ -294,7 +335,8 @@ curl http://localhost:8000/jobs/9f3c2a1b4d5e6f70
 
 | Method | Path | Auth | |
 |---|---|---|---|
-| `POST` | `/analyze` | key | Queue an audit. `202` + `job_id`. |
+| `POST` | `/analyze` | key | Queue an audit from video **URLs**. `202` + `job_id`. |
+| `POST` | `/analyze/upload` | key | Queue an audit from uploaded video **files** (multipart). Same `202`. |
 | `GET` | `/jobs/{id}` | key | Status, progress, results. |
 | `GET` | `/jobs` | key | Recent jobs, including ones that survived a restart. |
 | `GET` | `/jobs/{id}/report/{video_id}.html` | key | The self-contained HTML report. |
@@ -464,8 +506,10 @@ out every 512 MB free tier and every platform with a 5-minute request timeout.
   dependency ships a `manylinux_*_aarch64` wheel, so no source build.
   One-shot installer: **[`deploy/oracle/setup.sh`](deploy/oracle/setup.sh)**,
   guide: **[`deploy/oracle/README.md`](deploy/oracle/README.md)**.
-- **Hugging Face Spaces** — free CPU is 2 vCPU / 16 GB and Docker-native, but
-  storage is ephemeral and free Spaces are public, so set `AUDITOR_API_KEYS`.
+- **Hugging Face Spaces** — **needs PRO (~$9/mo)**, verified against the live
+  API: Docker Spaces are refused on free cpu-basic, public and private alike.
+  Good given PRO (2 vCPU / 16 GB, free HTTPS); at that price Hetzner is
+  better.
 - **Cloud Run** — generous free tier, scale-to-zero, service-account auth
   instead of an API key. No persistent disk without GCS FUSE.
 - **A €4–7/mo VPS (Hetzner)** — better than any free tier for steady use.

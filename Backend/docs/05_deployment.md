@@ -15,6 +15,15 @@ Deployment options are decided by these four numbers, not by preference.
 CPU. A GPU only speeds up ASR, which is not the bottleneck — the hosted vision
 call is, at 72–240 s per video, and that is network wait.
 
+**Uploads remove the worst deployment risk.** `POST /analyze/upload` takes the
+video files directly, so the server never calls TikTok. URL ingestion is the
+least reliable stage of a hosted run — anonymous downloads are refused from
+datacentre IP ranges far more often than from residential ones, and no amount
+of retrying fixes an IP-range block. A frontend that downloads locally and
+uploads makes the backend's network profile just "Gemini and Google Docs",
+which every host on this page can do. It also removes the cookies.txt
+operational burden entirely.
+
 **CPU cores pay off**: Phase 1 decode is parallel (measured 1.83× on 4 clips /
 8 cores), and Whisper's CTranslate2 backend scales with threads.
 
@@ -63,19 +72,31 @@ silent symptom (connection times out, nothing in any log):
    AMD Always Free shape — it is 1 GB of RAM and will be OOM-killed in Phase 2
    rather than failing cleanly.
 
-### Good: Hugging Face Spaces (Docker SDK)
+### Hugging Face Spaces — NOT free for this. Needs PRO.
 
-- Free CPU tier is **2 vCPU / 16 GB RAM** — genuinely enough
-- Native Docker support; this `Dockerfile` works as-is
-- You are already using the Hub, so `HF_TOKEN` is to hand
+**Corrected 2026-09-24, against the live API.** Creating a Docker Space
+returns:
 
-**Caveats, and they are real:**
-- Storage is **ephemeral** on the free tier — the artifact cache and the baked
-  models are lost on every restart. Bake models into the image (the default)
-  and accept that re-running a video re-pays its vision pass.
-- Spaces **sleep after inactivity** and cold-start slowly.
-- Free Spaces are **public**. Set `AUDITOR_API_KEYS` before you deploy, or
-  anyone can spend your Gemini quota.
+```
+402 Payment Required
+Static Spaces are free for everyone, but hosting Gradio and Docker
+Spaces on free cpu-basic requires a PRO subscription.
+```
+
+Tried **public and private**; both refused. Only **Static** Spaces (plain
+HTML/JS) are free, and a FastAPI backend cannot be one. An earlier version of
+this document said the free CPU tier worked — it does not.
+
+**With PRO (~$9/mo)** it is a good fit: 2 vCPU / 16 GB, Docker-native, free
+HTTPS, built-in secrets. But at $9 a Hetzner VPS is €6.50 for 4 vCPU, 80 GB,
+a real disk and no sleeping — so PRO only makes sense if you already have it.
+
+Remaining caveats if you do: storage is **ephemeral** (use
+`AUDITOR_EPHEMERAL=true` and hold the `compiled_brief` client-side), Spaces
+**sleep** after inactivity, and HF's IP ranges are among the worst for TikTok
+downloads.
+
+Guide, still accurate given PRO: [`deploy/huggingface/README.md`](../deploy/huggingface/README.md)
 
 ### Workable: Google Cloud Run
 
@@ -99,11 +120,14 @@ the free tier. Best fit if you want to move to a queue + worker split later.
 
 ### The honest summary
 
-> For steady industrial use, a **€4–7/month VPS (Hetzner CX22/CX32)** is a
-> better answer than any free tier: 4 vCPU / 8 GB, x86, a real disk, and no
-> sleep. If free is a hard requirement, **Oracle Always Free** is the one that
-> genuinely works; **HF Spaces** is the fastest to stand up if you can live
-> with ephemeral storage.
+> If free is a hard requirement, **Oracle Always Free** is the only option that
+> genuinely works — 4 ARM cores, 24 GB, 200 GB, no sleep, no expiry.
+> **Cloud Run** is the fallback if you would rather not run a VM, at the cost
+> of no persistent disk. **HF Spaces is not an option without PRO** — verified
+> against the live API, a Docker Space returns 402 on free cpu-basic.
+>
+> For steady industrial use, a **€4–7/month VPS (Hetzner CX22/CX32)** still
+> beats every free tier: 4 vCPU / 8 GB, x86, a real disk, and no sleep.
 
 ---
 

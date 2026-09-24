@@ -63,6 +63,21 @@ def main() -> int:
                 print(f'           {type(exc).__name__}: {str(exc)[:70]}')
 
     print()
+    # THE SAME RESOLVER THE SERVER USES. Checking with a bare shutil.which()
+    # here made the tool disagree with the running app: on Windows, winget
+    # installs ffmpeg and appends its directory to the USER PATH, so a shell
+    # that predates the install reports MISSING while a new terminal -- and a
+    # server that ran app.media.status() -- finds it. Two answers to one
+    # question is worse than either answer.
+    from app.media import status as media_status
+
+    _media = media_status()
+    if _media['added']:
+        print(f'  note   ffmpeg is not on the inherited PATH; found it in\n'
+              f'         {_media["added"]}\n'
+              f'         The server does this too, so jobs will run. Open a '
+              f'new terminal to get it in your shell.')
+
     missing_bin = []
     for exe, what in BINARIES:
         path = shutil.which(exe)

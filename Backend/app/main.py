@@ -19,10 +19,14 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Path as PathParam
+from typing import Optional
+
+from fastapi import (Depends, FastAPI, File as FileParam, Form, HTTPException,
+                     Path as PathParam, UploadFile)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
+from app import media
 from app.config import get_settings
 from app.jobs import get_store
 from app.logging_setup import setup_logging
@@ -92,6 +96,12 @@ async def lifespan(_app: FastAPI):
     _STATE.update(accepting=True, started_at=time.time())
     log.info('settings: %s', settings.redacted())
     log.info('auth: %s', auth_mode())
+    # BEFORE anything else looks for it. This both reports ffmpeg and, when it
+    # is installed somewhere this process's PATH does not cover, makes it
+    # runnable for the subprocesses Phase 1 spawns.
+    _media = media.status()
+    log.info('ffmpeg: %s | ffprobe: %s',
+             _media['ffmpeg'] or 'NOT FOUND', _media['ffprobe'] or 'NOT FOUND')
     if not configured_keys():
         log.warning('NO API KEY CONFIGURED. Anyone who can reach this port '
                     'can submit jobs and spend your model quota. Set '
@@ -148,7 +158,9 @@ app = FastAPI(
 
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(BodySizeLimitMiddleware,
-                   max_bytes=settings.max_body_bytes)
+                   max_bytes=settings.max_body_bytes,
+                   upload_paths=('/analyze/upload',),
+                   upload_max_bytes=settings.max_upload_bytes)
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -174,11 +186,16 @@ def ready():
     """READINESS. 503 until this instance can actually serve a job."""
     problems = settings.missing_requirements()
     ns_ready = _STATE['namespace'] == 'ready'
+    _media = media.status()
     body = {
         'ready': bool(ns_ready and not problems and _STATE['accepting']),
         'namespace': _STATE['namespace'],
         'model_probe': _STATE['probe'],
         'vision_models': _STATE['probe_detail'] or None,
+        # Named explicitly: "ready: false" with a paragraph of prose is a
+        # worse diagnostic than one line saying which binary is missing.
+        'ffmpeg': _media['ffmpeg'],
+        'ffprobe': _media['ffprobe'],
         'accepting_work': _STATE['accepting'],
         'auth': auth_mode(),
         'problems': problems,
@@ -221,25 +238,31 @@ def config() -> dict:
 
 
 # ---------------------------------------------------------------------------
-@app.post('/analyze', response_model=JobAccepted, status_code=202,
-          tags=['audit'], dependencies=[Depends(require_key)])
-def analyze(req: AnalyzeRequest) -> JobAccepted:
-    """Queue an audit of one or more videos against one brief."""
+def _guard_new_job(*, n_videos: int, brief_url, brief_text,
+                   compiled_brief) -> None:
+    """Everything that must hold before a job is created, for EITHER entry.
+
+    Shared between /analyze and /analyze/upload deliberately. When these lived
+    only in /analyze, a second entry point was one forgotten check away from
+    accepting work with no brief, past the queue ceiling, or with no API key --
+    and each of those fails deep inside a worker minutes later instead of at
+    the request.
+    """
     if not _STATE['accepting']:
         raise HTTPException(503, 'this instance is shutting down')
     if _STATE['namespace'] != 'ready':
         raise HTTPException(503, 'still starting up -- poll /ready')
-    if not req.brief_url and not req.brief_text and not req.compiled_brief:
+    if not brief_url and not brief_text and not compiled_brief:
         raise HTTPException(
             422, 'give brief_url (a Google Docs link shared "anyone with the '
                  'link can view"), brief_text, or compiled_brief (the '
                  '`compiled_brief` a previous job returned).')
-    if req.brief_url and req.brief_text:
+    if brief_url and brief_text:
         raise HTTPException(
             422, 'brief_url and brief_text are mutually exclusive.')
-    if len(req.video_urls) > settings.max_videos_per_job:
+    if n_videos > settings.max_videos_per_job:
         raise HTTPException(
-            422, f'{len(req.video_urls)} videos exceeds the per-job ceiling '
+            422, f'{n_videos} videos exceeds the per-job ceiling '
                  f'of {settings.max_videos_per_job}. Raise '
                  f'AUDITOR_MAX_VIDEOS deliberately, or split the request.')
     if not settings.gemini_api_key:
@@ -247,19 +270,188 @@ def analyze(req: AnalyzeRequest) -> JobAccepted:
             503, 'GEMINI_API_KEY is not set. Vision, brief compilation and '
                  'L3 adjudication all need it and there is no local '
                  'fallback in this deployment.')
-
-    store = get_store()
-    depth = store.queue_depth()
+    depth = get_store().queue_depth()
     if depth >= settings.max_queued_jobs:
         raise HTTPException(
             429, f'{depth} job(s) already queued or running, at the ceiling '
                  f'of {settings.max_queued_jobs}. Each job takes minutes; '
                  f'poll your existing jobs before adding more.')
+
+
+@app.post('/analyze', response_model=JobAccepted, status_code=202,
+          tags=['audit'], dependencies=[Depends(require_key)])
+def analyze(req: AnalyzeRequest) -> JobAccepted:
+    """Queue an audit of one or more videos against one brief.
+
+    The server downloads each URL. If your videos are already on disk -- or
+    TikTok refuses this server's IP, which is common from a datacentre -- post
+    the files to `/analyze/upload` instead.
+    """
+    _guard_new_job(n_videos=len(req.video_urls), brief_url=req.brief_url,
+                   brief_text=req.brief_text,
+                   compiled_brief=req.compiled_brief)
+    store = get_store()
     job = store.create(req.model_dump())
     store.submit(job)
-    log.info('[%s] accepted: %d video(s)', job.id, len(req.video_urls))
+    log.info('[%s] accepted: %d video(s) by URL', job.id, len(req.video_urls))
     return JobAccepted(job_id=job.id, status='queued',
                        poll=f'/jobs/{job.id}')
+
+
+@app.post('/analyze/upload', response_model=JobAccepted, status_code=202,
+          tags=['audit'], dependencies=[Depends(require_key)])
+async def analyze_upload(
+    files: list[UploadFile] = FileParam(
+        ..., description='The video files themselves. Name each one after its '
+                         'video id (e.g. 7671762950687919390.mp4) and the '
+                         'report can still show which link it came from.'),
+    brief_url: Optional[str] = Form(None),
+    brief_text: Optional[str] = Form(None),
+    compiled_brief: Optional[str] = Form(
+        None, description='A previous job\'s `compiled_brief`, as a JSON '
+                          'string. Multipart cannot nest an object.'),
+    source_urls: Optional[str] = Form(
+        None, description='JSON array of the original links, for provenance '
+                          'only. Nothing is fetched from them.'),
+    force_reaudit: bool = Form(False),
+    recompile: bool = Form(False),
+    label: Optional[str] = Form(None, max_length=120),
+) -> JobAccepted:
+    """Queue an audit of UPLOADED videos against one brief.
+
+    The same pipeline as `/analyze`; only the way the bytes arrive differs. Use
+    this when the client already has the video -- it removes the single least
+    reliable stage of a deployed run, since TikTok refuses anonymous downloads
+    from datacentre IPs far more readily than from residential ones.
+
+    Everything else is identical: `brief_url`, `brief_text` or
+    `compiled_brief`, then poll `GET /jobs/{id}`.
+    """
+    # Parse the JSON-in-multipart fields BEFORE creating anything, so a
+    # malformed body never leaves a job directory behind.
+    parsed_brief = _form_json(compiled_brief, 'compiled_brief', dict)
+    # Strings only. These reach `url_for_source`, which regexes each entry;
+    # a JSON array containing a number would TypeError there -- in the worker,
+    # minutes later, instead of here.
+    parsed_urls = [str(u) for u in (_form_json(source_urls, 'source_urls',
+                                               list) or []) if u]
+
+    _guard_new_job(n_videos=len(files), brief_url=brief_url,
+                   brief_text=brief_text, compiled_brief=parsed_brief)
+    if not files:
+        raise HTTPException(422, 'attach at least one video file as `files`.')
+
+    store = get_store()
+    job = store.create({
+        'video_urls': [], 'uploads': [], 'source_urls': parsed_urls,
+        'brief_url': brief_url, 'brief_text': brief_text,
+        'compiled_brief': parsed_brief, 'force_reaudit': force_reaudit,
+        'recompile': recompile, 'label': label,
+    })
+    # job_dirs() is the SAME function the worker binds DIRS from, so the
+    # staging path and the path Phase 1 reads cannot drift apart.
+    inbox = runtime.job_dirs(job.id, ephemeral=settings.ephemeral)['inbox']
+    try:
+        saved = await _stage_uploads(files, inbox)
+    except HTTPException:
+        store.discard(job)
+        raise
+    except Exception as exc:
+        store.discard(job)
+        log.exception('[%s] upload staging failed', job.id)
+        raise HTTPException(400, f'could not stage the upload: {exc}') from exc
+
+    job.payload['uploads'] = saved
+    job.requested_videos = len(saved)
+    job.persist()
+    store.submit(job)
+    log.info('[%s] accepted: %d uploaded video(s)', job.id, len(saved))
+    return JobAccepted(job_id=job.id, status='queued',
+                       poll=f'/jobs/{job.id}')
+
+
+def _form_json(raw: Optional[str], field: str, want: type):
+    """Decode a JSON object smuggled through a multipart form field."""
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            422, f'{field} is not valid JSON: {exc}') from exc
+    if not isinstance(value, want):
+        raise HTTPException(
+            422, f'{field} must be a JSON {want.__name__}, got '
+                 f'{type(value).__name__}.')
+    return value
+
+
+async def _stage_uploads(files: list, inbox: Path) -> list[str]:
+    """Stream each upload to the job's inbox, enforcing the real size limit.
+
+    STREAMED IN CHUNKS, never read whole. `await file.read()` with no argument
+    buffers the entire video in memory, and on a container sized for this
+    pipeline a handful of concurrent uploads would be the whole RAM budget.
+
+    The size limit is enforced HERE, on bytes actually written, not only by the
+    middleware: the middleware checks a declared content-length, and a chunked
+    request declares nothing. A partial write is deleted rather than left for
+    Phase 1 to trip over -- a truncated mp4 decodes as a corrupt artifact, not
+    as a clean error.
+    """
+    from app.services import ingest
+
+    inbox.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+    total = 0
+    for upload in files:
+        try:
+            name = ingest.safe_upload_name(upload.filename, set(saved))
+        except ingest.IngestError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        dest = inbox / name
+        written = 0
+        try:
+            with dest.open('wb') as out:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    total += len(chunk)
+                    if written > settings.max_video_bytes:
+                        raise HTTPException(
+                            413,
+                            f'{name} exceeds AUDITOR_MAX_VIDEO_BYTES '
+                            f'({settings.max_video_bytes / 1048576:.0f} MB). '
+                            f'Short-form video is 5-30 MB; this is either the '
+                            f'wrong file or needs the limit raised '
+                            f'deliberately.')
+                    if total > settings.max_upload_bytes:
+                        raise HTTPException(
+                            413,
+                            f'this request exceeds AUDITOR_MAX_UPLOAD_BYTES '
+                            f'({settings.max_upload_bytes / 1048576:.0f} MB) '
+                            f'in total. Send fewer files per request.')
+                    out.write(chunk)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
+        finally:
+            await upload.close()
+
+        if not written:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(422, f'{name} is empty (0 bytes).')
+        try:
+            kind = ingest.validate_video_file(dest)
+        except ingest.IngestError as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(422, str(exc)) from exc
+        log.info('staged %s (%.1f MB, %s)', name, written / 1e6, kind)
+        saved.append(name)
+    return saved
 
 
 @app.get('/jobs/{job_id}', response_model=JobOut, tags=['audit'],
@@ -282,8 +474,18 @@ def list_jobs(limit: int = 25) -> list[dict]:
 
 @app.get('/jobs/{job_id}/report/{filename}', tags=['audit'],
          dependencies=[Depends(require_key)])
-def get_report(job_id: str, filename: str):
-    """The HTML report, served as the self-contained file it already is."""
+def get_report(job_id: str = PathParam(..., min_length=8, max_length=64,
+                                       pattern=r'^[A-Za-z0-9_-]+$'),
+               filename: str = PathParam(..., max_length=128,
+                                         pattern=r'^[A-Za-z0-9._-]+$')):
+    """The HTML report, served as the self-contained file it already is.
+
+    `job_id` is PATTERNED, like it is on GET /jobs/{id}. Without that, a
+    percent-encoded `..%2f..%2f` decodes into the path used to locate
+    jobs/<id>/job.json and reads outside the data root. The report path itself
+    comes from our own result row and is re-checked below, so this closes the
+    one parameter that reached the filesystem unvalidated.
+    """
     job = get_store().get(job_id)
     if job is None:
         raise HTTPException(404, f'no job {job_id}')
@@ -311,7 +513,8 @@ def get_report(job_id: str, filename: str):
 
 @app.get('/jobs/{job_id}/reports.zip', tags=['audit'],
          dependencies=[Depends(require_key)])
-def get_reports_zip(job_id: str):
+def get_reports_zip(job_id: str = PathParam(..., min_length=8, max_length=64,
+                                            pattern=r'^[A-Za-z0-9_-]+$')):
     """Every report from this job, in one archive.
 
     Each file is renamed after its VIDEO rather than its content hash -- a

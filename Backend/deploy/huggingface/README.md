@@ -11,6 +11,26 @@ short_description: Audits short-form social video against a content brief
 
 # Creative Audit API
 
+> ## ⚠️ A Docker Space is NOT free any more
+>
+> Verified against the live API on 2026-09-24:
+>
+> ```
+> 402 Payment Required
+> Static Spaces are free for everyone, but hosting Gradio and Docker
+> Spaces on free cpu-basic requires a PRO subscription.
+> ```
+>
+> Both **public and private** were tried; both are refused. Only **Static**
+> Spaces (plain HTML/JS) remain free, and a FastAPI backend cannot be one.
+>
+> **This guide therefore needs a PRO subscription (~$9/mo).** At that price a
+> Hetzner VPS is €6.50/mo for 4 vCPU, 80 GB, no sleeping and no ephemeral
+> storage — see `docs/05_deployment.md`. Everything below is correct *given*
+> PRO; it is kept because the Dockerfile, the front-matter and the ephemeral
+> mode are all still right, and because PRO is a reasonable choice if you
+> already pay for it.
+
 FastAPI backend for the Phase 1–7 video-compliance pipeline. Video URLs and a
 content brief in; timestamped verdicts, a score, an HTML report and a
 creative-angle attribution out.

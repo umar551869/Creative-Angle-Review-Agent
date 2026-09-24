@@ -167,6 +167,25 @@ def run_vision(force: bool = False, progress: ProgressFn = _noop) -> dict:
 # ---------------------------------------------------------------------------
 # Phases 5-7: per video. This is cell 147 (§90), field for field.
 # ---------------------------------------------------------------------------
+def _verdict_out(v: dict) -> dict:
+    """Notebook verdict -> VerdictOut, translating the two renamed fields.
+
+    The notebook writes `reason` and `layer`; the schema declares `rationale`
+    and `decided_by`. Pydantic drops an unmatched key SILENTLY, so every API
+    response carried `rationale: ""` and `decided_by: null` on all 28 verdicts
+    while the HTML report printed both from the same data -- the API looked
+    like the audit had no explanation for anything it decided.
+
+    Exactly the trap the modality_health comment above already describes. The
+    notebook's names are not changed: renaming there would ripple through the
+    cached artifacts and the report. The translation belongs at the API
+    boundary, which is what this layer is for.
+    """
+    return {**v,
+            'rationale': v.get('rationale') or v.get('reason') or '',
+            'decided_by': v.get('decided_by') or v.get('layer')}
+
+
 def audit_one(video: dict, brief: dict, *, force: bool = False,
               progress: ProgressFn = _noop) -> dict:
     """Evidence -> verdicts -> score -> report, for one video.
@@ -199,12 +218,16 @@ def audit_one(video: dict, brief: dict, *, force: bool = False,
 
     ev = ns['build_evidence'](video, tr, oc, vi, P5, verbose=False)
     recs = ns['load_records'](ev)
-    row['records'] = ev['stats']['records']
+    row['evidence_records'] = ev['stats']['records']
 
     health = ((ev.get('stats') or {}).get('modality_health')
               or ev.get('modality_health') or {})
     can_fail = ev.get('can_fail_on') or {}
-    row['health'] = {
+    # THE SCHEMA'S NAMES, not convenient local ones. VideoResultOut declares
+    # `modality_health`, `evidence_records` and `talking_points_*`; a row key
+    # that does not match is DROPPED by pydantic without a word, and a live
+    # run returned null for all of them while the values sat right here.
+    row['modality_health'] = {
         k: {'ran': (health.get(k) or {}).get('ran'),
             'absent': (health.get(k) or {}).get('absent'),
             'degraded': (health.get(k) or {}).get('degraded'),
@@ -220,6 +243,8 @@ def audit_one(video: dict, brief: dict, *, force: bool = False,
     # ---- Phase 6: the audit -----------------------------------------------
     progress('phase6', name)
     res = ns['audit_video'](video, ev, brief, P6, verbose=False, force=force)
+    # (see _verdict_out below -- the same naming trap as modality_health above,
+    #  three more fields, caught by reading a live response rather than a test)
     if res.get('status') == 'BRIEF_NOT_USABLE':
         raise PhaseError('phase6', 'the compiled brief is not approved, so '
                                    'requirements_for_audit() refused it',
@@ -261,7 +286,12 @@ def audit_one(video: dict, brief: dict, *, force: bool = False,
             'option': v2.get('requirement_label') or v2.get('requirement_id'),
             'status': v2.get('status'), 'alignment': v2.get('alignment')}
     row['chosen_options'] = chosen
-    row['verdicts'] = list(res.get('verdicts') or [])
+    row['verdicts'] = [_verdict_out(v) for v in (res.get('verdicts') or [])]
+    # The audit artifact knows how long the video is; the row did not carry it,
+    # so every API response reported duration_s: null while the HTML report
+    # printed 54.2s from the same data.
+    if res.get('duration_seconds') is not None:
+        row['duration_s'] = round(float(res['duration_seconds']), 2)
     row['verdict_mix'] = dict(
         Counter(v.get('status') for v in (res.get('verdicts') or [])))
 
@@ -288,7 +318,8 @@ def audit_one(video: dict, brief: dict, *, force: bool = False,
             'band_basis': s.get('band_basis'),
             'lead_with_band': bool(s.get('lead_with_band')),
         },
-        'tp_covered': len(tp['covered']), 'tp_total': tp['total'],
+        'talking_points_covered': len(tp['covered']),
+        'talking_points_total': tp['total'],
         # write_report returns BOTH 'html_path' (the file) and 'html' (the
         # whole document as a string). Keep the PATH.
         'report_html': str((rp or {}).get('html_path') or ''),

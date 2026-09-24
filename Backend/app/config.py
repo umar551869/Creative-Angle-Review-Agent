@@ -196,9 +196,23 @@ class Settings:
         self.cors_origins = [o.strip() for o
                              in os.environ.get('AUDITOR_CORS_ORIGINS',
                                                '').split(',') if o.strip()]
-        # Every endpoint takes a small JSON document. Without a ceiling an
+        # Every JSON endpoint takes a small document. Without a ceiling an
         # unauthenticated caller can make the process buffer arbitrary bytes.
         self.max_body_bytes = _int('AUDITOR_MAX_BODY_BYTES', 2 * 1024 * 1024)
+        # UPLOADS ARE THE EXCEPTION, and need their own ceiling rather than a
+        # raised global one: lifting max_body_bytes to 512 MB would let any
+        # caller post half a gigabyte of JSON at /analyze, which is the attack
+        # the global limit exists to stop. Two limits, one per shape of
+        # request.
+        #
+        # Per FILE first, then per REQUEST, because ten 40 MB videos and one
+        # 400 MB video are different problems: the first is a legitimate batch,
+        # the second is a video this pipeline should not be decoding. A
+        # 60-second TikTok at 1080p is 5-30 MB, so 200 MB is generous.
+        self.max_video_bytes = _int('AUDITOR_MAX_VIDEO_BYTES',
+                                    200 * 1024 * 1024)
+        self.max_upload_bytes = _int('AUDITOR_MAX_UPLOAD_BYTES',
+                                     512 * 1024 * 1024)
         # Backpressure. Each job takes minutes, so an unbounded queue just
         # converts "too much work" into "nothing finishes and memory grows".
         self.max_queued_jobs = _int('AUDITOR_MAX_QUEUED_JOBS', 20)
@@ -248,6 +262,20 @@ class Settings:
             problems.append(
                 f'AUDITOR_VISION_PROVIDER={self.vision_provider!r} is neither '
                 f'"gemini" nor "local".')
+        # ffmpeg is not pip-installable and is the FIRST thing a job touches:
+        # Phase 1 probes the container with ffprobe before decoding anything.
+        # Leaving it out of this list meant /ready answered `ready: true` on a
+        # box where every single job would die in Phase 1 -- a green readiness
+        # probe in front of a server that cannot do the work.
+        from app.media import install_hint, status
+
+        media = status()
+        if media['missing']:
+            problems.append(
+                f'{" and ".join(media["missing"])} not found. Phase 1 probes '
+                f'the container and extracts audio with them, so every job '
+                f'fails there. Install: {install_hint()} -- or set '
+                f'AUDITOR_FFMPEG_DIR to the directory holding them.')
         return problems
 
     def apply_to_environment(self) -> list[str]:
@@ -307,6 +335,8 @@ class Settings:
             'cors_origins': self.cors_origins or '(none)',
             'max_queued_jobs': self.max_queued_jobs,
             'max_body_bytes': self.max_body_bytes,
+            'max_video_bytes': self.max_video_bytes,
+            'max_upload_bytes': self.max_upload_bytes,
         }
 
     def disk_free_mb(self) -> float:

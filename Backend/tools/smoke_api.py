@@ -25,8 +25,20 @@ def main() -> int:
         if methods:
             print(f'      {",".join(methods):<10} {r.path}')
 
+    # AUTHENTICATE IF THIS DEPLOYMENT IS AUTHENTICATED. The keyed endpoints
+    # here are read-only checks, and without this the tool 401s on every one
+    # of them the moment AUDITOR_API_KEYS is set -- i.e. exactly when someone
+    # is smoke-testing a deployment that is configured correctly. It then
+    # indexed the 401 body and died with KeyError: 'gemini_api_key'.
+    from app.security import configured_keys
+
+    keys = configured_keys()
+    headers = {'x-api-key': keys[0]} if keys else {}
+    print(f'\n  auth: {"key sent" if keys else "open, no key configured"}')
+
     failures = []
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with TestClient(app, raise_server_exceptions=False,
+                    headers=headers) as c:
         # LIVENESS: cheap, no model, no key. It must be 200 even when the
         # deployment is misconfigured, or a restart policy loops forever.
         r = c.get('/health')
@@ -51,9 +63,12 @@ def main() -> int:
             failures.append('metrics')
 
         r = c.get('/config')
-        cfg = r.json()
+        cfg = r.json() if r.status_code == 200 else {}
+        if r.status_code != 200:
+            failures.append(f'config -> {r.status_code}')
         print(f'  GET /config -> {r.status_code}  '
-              f'gemini={cfg["gemini_api_key"]}  openai={cfg["openai_api_key"]}')
+              f'gemini={cfg.get("gemini_api_key", "?")}  '
+              f'openai={cfg.get("openai_api_key", "?")}')
         # The single most important assertion in this file.
         blob = r.text
         if 'AIza' in blob or 'sk-' in blob:
@@ -83,6 +98,24 @@ def main() -> int:
                    else str(detail.get('detail'))[:90])
             print(f'      {"PASS" if ok else "FAIL"}  {label:<12} '
                   f'-> {r.status_code}  {msg[:78]}')
+
+        # ---- the upload door, held to the same standard -------------------
+        # A second way in is a second way to get validation wrong, so the
+        # shared guard is probed here too rather than assumed.
+        mp4 = b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 32
+        uploads = [
+            ('no brief', [('files', ('a.mp4', mp4, 'video/mp4'))], {}, 422),
+            ('not a video', [('files', ('a.txt', b'hi', 'text/plain'))],
+             {'brief_text': 'hi'}, 422),
+            ('bad bytes', [('files', ('a.mp4', b'not a video', 'video/mp4'))],
+             {'brief_text': 'hi'}, 422),
+        ]
+        for label, files, form, want in uploads:
+            r = c.post('/analyze/upload', files=files, data=form)
+            ok = r.status_code == want
+            failures.append(f'upload:{label}') if not ok else None
+            print(f'      {"PASS" if ok else "FAIL"}  upload {label:<12} '
+                  f'-> {r.status_code}  {str(r.json().get("detail"))[:60]}')
 
         r = c.get('/jobs/doesnotexist123')
         print(f'      {"PASS" if r.status_code == 404 else "FAIL"}  '

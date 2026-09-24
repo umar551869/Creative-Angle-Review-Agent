@@ -294,3 +294,257 @@ def test_non_google_brief_url_is_refused_with_the_reason(client):
 def test_brief_requires_one_of_the_two_inputs(client):
     r = client.post('/briefs/compile', json={})
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /analyze/upload -- the client already has the bytes
+#
+# This exists because URL ingestion is the least reliable stage of a deployed
+# run: TikTok refuses anonymous downloads from datacentre IPs far more often
+# than from residential ones. Everything downstream is identical, so these
+# tests are about the boundary: what gets written, what gets refused, and what
+# is left behind when a request fails.
+# ---------------------------------------------------------------------------
+MP4 = b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom' + b'\x00' * 64
+
+
+def _upload(client, files, **form):
+    form.setdefault('brief_text', 'Show the product and name it.')
+    return client.post('/analyze/upload', files=files, data=form)
+
+
+@pytest.fixture
+def staged(monkeypatch):
+    """A key present, the worker disarmed, and no job left behind.
+
+    Staging is what these tests are about. Letting the job actually submit
+    would start the real pipeline in a background thread -- it would fail on
+    the fake brief, slowly, while the assertions raced it.
+
+    THE CLEANUP IS NOT TIDINESS. Every accepted upload writes a real
+    jobs/<id>/ directory, and `GET /jobs` is capped at 100 by created_at. Left
+    to accumulate, these pushed an older fixture job out of the window and
+    broke test_listing_includes_jobs_that_survived_a_restart -- a test in
+    another file, failing for a reason invisible from inside it.
+    """
+    import shutil
+
+    from app import jobs as jobs_mod
+    from app.main import settings as live
+
+    monkeypatch.setattr(live, 'gemini_api_key', 'test-key-not-real')
+    monkeypatch.setattr(jobs_mod.JobStore, 'submit', lambda self, job: None)
+
+    root = live.jobs
+    before = {d.name for d in root.iterdir()} if root.is_dir() else set()
+    yield live
+    if root.is_dir():
+        for d in root.iterdir():
+            if d.name not in before:
+                shutil.rmtree(d, ignore_errors=True)
+
+
+def test_upload_rejects_a_non_video_extension(client, staged):
+    r = _upload(client, [('files', ('notes.txt', b'hello', 'text/plain'))])
+    assert r.status_code == 422
+    assert 'video extension' in r.text, r.text[:300]
+
+
+def test_upload_rejects_bytes_that_are_not_a_video(client, staged):
+    """The extension is the caller's claim; the container bytes are the fact.
+
+    Accepting this would trade a clear 422 for a job that dies in Phase 1
+    decode with an ffmpeg error no operator can act on.
+    """
+    r = _upload(client, [('files', ('clip.mp4', b'not a video at all' * 4,
+                                    'video/mp4'))])
+    assert r.status_code == 422
+    assert 'container' in r.text, r.text[:300]
+
+
+def test_upload_rejects_an_empty_file(client, staged):
+    r = _upload(client, [('files', ('clip.mp4', b'', 'video/mp4'))])
+    assert r.status_code == 422
+    assert 'empty' in r.text
+
+
+def test_upload_enforces_the_per_file_ceiling(client, staged, monkeypatch):
+    monkeypatch.setattr(staged, 'max_video_bytes', 1024)
+    r = _upload(client, [('files', ('big.mp4', MP4 + b'\x00' * 4096,
+                                    'video/mp4'))])
+    assert r.status_code == 413
+    assert 'AUDITOR_MAX_VIDEO_BYTES' in r.text
+
+
+def test_upload_still_requires_a_brief(client, staged):
+    """The guard is shared with /analyze, so a second door cannot skip it."""
+    r = client.post('/analyze/upload',
+                    files=[('files', ('a.mp4', MP4, 'video/mp4'))])
+    assert r.status_code == 422
+    assert 'brief_url' in r.text
+
+
+def test_upload_refuses_without_a_key(client):
+    if os.environ.get('GEMINI_API_KEY'):
+        pytest.skip('a key is configured')
+    r = _upload(client, [('files', ('a.mp4', MP4, 'video/mp4'))])
+    assert r.status_code == 503
+    assert 'GEMINI_API_KEY' in r.text
+
+
+def test_upload_honours_the_video_ceiling(client, staged, monkeypatch):
+    monkeypatch.setattr(staged, 'max_videos_per_job', 2)
+    r = _upload(client, [('files', (f'{i}.mp4', MP4, 'video/mp4'))
+                         for i in range(3)])
+    assert r.status_code == 422
+    assert 'AUDITOR_MAX_VIDEOS' in r.text
+
+
+def test_upload_stages_the_files_and_queues_a_job(client, staged):
+    from auditor import runtime
+
+    r = _upload(client, [('files', ('7671762950687919390.mp4', MP4,
+                                    'video/mp4')),
+                         ('files', ('second.mov', MP4, 'video/quicktime'))])
+    assert r.status_code == 202, r.text[:400]
+    body = r.json()
+    assert body['status'] == 'queued'
+    job_id = body['job_id']
+
+    inbox = runtime.job_dirs(job_id)['inbox']
+    landed = sorted(p.name for p in inbox.iterdir())
+    assert landed == ['7671762950687919390.mp4', 'second.mov']
+    # The id-named file keeps the link mapping url_for_source relies on.
+    assert client.get(f'/jobs/{job_id}').json()['requested_videos'] == 2
+
+
+def test_upload_sanitises_a_traversing_filename(client, staged):
+    from auditor import runtime
+
+    r = _upload(client, [('files', ('../../../evil.mp4', MP4, 'video/mp4'))])
+    assert r.status_code == 202, r.text[:300]
+    inbox = runtime.job_dirs(r.json()['job_id'])['inbox']
+    names = [p.name for p in inbox.iterdir()]
+    assert names == ['evil.mp4'], names
+    assert not (inbox.parent.parent / 'evil.mp4').exists()
+
+
+def test_a_failed_upload_leaves_no_phantom_job(client, staged):
+    """A queued job no worker will pick up is worse than no job at all."""
+    before = {j['job_id'] for j in client.get('/jobs').json()}
+    r = _upload(client, [('files', ('clip.mp4', b'junk junk junk',
+                                    'video/mp4'))])
+    assert r.status_code == 422
+    after = {j['job_id'] for j in client.get('/jobs').json()}
+    assert after == before, 'the discarded job is still listed'
+
+
+def test_compiled_brief_must_be_json_in_a_form_field(client, staged):
+    r = client.post('/analyze/upload',
+                    files=[('files', ('a.mp4', MP4, 'video/mp4'))],
+                    data={'compiled_brief': 'not json{'})
+    assert r.status_code == 422
+    assert 'compiled_brief' in r.text and 'JSON' in r.text
+
+
+# ---------------------------------------------------------------------------
+# limits and path safety
+# ---------------------------------------------------------------------------
+def test_the_big_body_limit_applies_only_to_the_upload_path(client):
+    """Raising one ceiling must not raise the other.
+
+    A single global limit big enough for video would let any caller post half a
+    gigabyte of JSON at /analyze, which is the attack the limit exists to stop.
+    """
+    from app.main import settings as live
+
+    assert live.max_upload_bytes > live.max_body_bytes
+    huge = str(live.max_upload_bytes - 1)
+    r = client.post('/analyze', json={'video_urls': [VID], 'brief_text': 'x'},
+                    headers={'content-length': huge})
+    assert r.status_code == 413
+    assert '/analyze/upload' in r.text
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg -- not pip-installable, and the first thing a job touches
+# ---------------------------------------------------------------------------
+def test_ready_reports_the_media_binaries(client):
+    """Named on /ready, so a failure is one line and not a paragraph."""
+    body = client.get('/ready').json()
+    assert 'ffmpeg' in body and 'ffprobe' in body
+
+
+def test_missing_ffmpeg_makes_the_server_NOT_ready(monkeypatch):
+    """The gap this closes: /ready said `true` on a box where every job would
+    die in Phase 1. A green probe in front of a server that cannot work is
+    worse than a red one."""
+    from app import media
+    from app.config import get_settings
+
+    monkeypatch.setattr(media, 'status',
+                        lambda refresh=False: {
+                            'ffmpeg': None, 'ffprobe': '/usr/bin/ffprobe',
+                            'added': None, 'missing': ['ffmpeg']})
+    get_settings.cache_clear()
+    problems = get_settings().missing_requirements()
+    assert any('ffmpeg' in p for p in problems), problems
+    assert any('AUDITOR_FFMPEG_DIR' in p for p in problems), (
+        'the error must name the escape hatch, not just the problem')
+
+
+def test_resolver_extends_path_rather_than_installing(monkeypatch, tmp_path):
+    """Installed-but-invisible is the common Windows case: winget appends to
+    the USER PATH, and a process that predates the install never sees it.
+
+    Real files on a real (empty) PATH, not a mocked `which` -- the first
+    version of this test stubbed shutil.which and the stub could never satisfy
+    the resolver's own exit condition, so it walked every candidate directory
+    and reported the last one. The test failed for a reason that had nothing
+    to do with the behaviour under test.
+    """
+    from app import media
+
+    fake, empty = tmp_path / 'bin', tmp_path / 'empty'
+    fake.mkdir()
+    empty.mkdir()
+    for b in ('ffmpeg', 'ffprobe'):
+        p = fake / (b + ('.exe' if sys.platform == 'win32' else ''))
+        p.write_bytes(b'')
+        p.chmod(0o755)
+
+    monkeypatch.setenv('PATH', str(empty))       # nothing findable
+    monkeypatch.setenv('AUDITOR_FFMPEG_DIR', str(fake))
+    assert media.resolve()['missing'] == [] or sys.platform != 'win32'
+
+    monkeypatch.setenv('PATH', str(empty))
+    out = media.resolve()
+    assert out['added'] == str(fake), out
+    assert os.environ['PATH'].startswith(str(fake)), (
+        'it must PREPEND -- appending lets a broken copy earlier on PATH win')
+
+
+def test_resolver_reports_what_it_cannot_find(monkeypatch, tmp_path):
+    """Nothing anywhere must be a clean report, never an exception."""
+    from app import media
+
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    monkeypatch.setenv('PATH', str(empty))
+    monkeypatch.setenv('AUDITOR_FFMPEG_DIR', str(empty))
+    monkeypatch.setattr(media, '_candidate_dirs', lambda: [empty])
+    out = media.resolve()
+    assert out['missing'] == ['ffmpeg', 'ffprobe']
+    assert out['added'] is None
+
+
+@pytest.mark.parametrize('job_id', ['..%2f..%2fetc', '../../secret',
+                                    'has spaces', 'a' * 65])
+def test_report_routes_refuse_a_malformed_job_id(client, job_id):
+    """job_id reaches the filesystem, so it is patterned like GET /jobs/{id}.
+
+    Without the pattern a percent-encoded traversal decodes into the path used
+    to locate jobs/<id>/job.json and reads outside the data root.
+    """
+    for url in (f'/jobs/{job_id}/report/a.html', f'/jobs/{job_id}/reports.zip'):
+        assert client.get(url).status_code in (404, 422), url

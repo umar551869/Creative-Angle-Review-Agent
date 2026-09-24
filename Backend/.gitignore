@@ -4,3 +4,19 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
+
+# Secrets. A live credential in a git history outlives every attempt to
+# delete it, so these never get committed -- the key travels by direct
+# message instead.
+local_api_key.txt
+*.key
+
+# Runtime noise: server and tunnel logs, one-off job dumps. None of it
+# describes the code, and the logs echo the effective settings.
+server.log
+server.err
+server*.log
+tunnel*.log
+job_id.txt
+run2.json
+run_result_*.json
