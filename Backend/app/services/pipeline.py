@@ -213,16 +213,27 @@ def _shelve_report(rp: dict, source: str, row: dict) -> None:
     to a human with only the backend, who has no way to know which hash is
     which creator, and must call the API to find out.
 
-    So the canonical copy stays where it is, and a second one lands at
-    jobs/<job_id>/reports/<video-id>.html, which is browsable. Copies, not
-    links: Windows needs a privilege for symlinks that a service account
-    usually lacks, and a report is tens of KB.
+    So the canonical copy stays where it is and a readable one lands at
+    <data_root>/reports/<video-id>__<job_id>.html.
 
-    Never raises. A report that is written but not filed is a much smaller
-    problem than a job that fails at the very end because a copy did not land.
+    NOT under jobs/<id>/reports/, which was the first attempt and was exactly
+    backwards: _sweep_old_jobs() deletes that directory after
+    AUDITOR_KEEP_JOB_FILES_HOURS, so the copy a person browses would age out
+    while the hash-named one nobody can read survives indefinitely. The job
+    workspace is scratch; this is the deliverable.
+
+    The job id is in the FILENAME rather than the path so two audits of the
+    same video stay distinguishable and neither overwrites the other.
+
+    Copies, not links: Windows needs a privilege for symlinks that a service
+    account usually lacks, and a report is tens of KB. Never raises -- a
+    report written but not filed is a far smaller problem than a job that
+    fails at the very end because a copy did not land.
     """
     import shutil
 
+    job_dir = Path(runtime.load()['DIRS'].get('job') or '')
+    job_id = job_dir.name or 'job'
     for key, ext in (('html_path', 'html'), ('json_path', 'json')):
         src = (rp or {}).get(key)
         if not src:
@@ -231,17 +242,15 @@ def _shelve_report(rp: dict, source: str, row: dict) -> None:
             src = Path(src)
             if not src.is_file():
                 continue
-            # From the namespace, so it is the CURRENT job's reports dir --
-            # DIRS is a ContextVar-backed proxy and this runs inside
-            # use_job_dirs().
-            dest_dir = Path(runtime.load()['DIRS']['reports'])
+            dest_dir = Path(runtime.load()['DIRS']['root']) / 'reports'
             dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / f'{Path(source).stem[:60] or "video"}.{ext}'
+            stem = Path(source).stem[:60] or 'video'
+            dest = dest_dir / f'{stem}__{job_id[:8]}.{ext}'
             shutil.copy2(src, dest)
             row[f'report_{ext}_file'] = str(dest)
         except OSError as exc:
-            log.warning('%s: could not file the %s report next to the job '
-                        '(%s). The canonical copy is still at %s',
+            log.warning('%s: could not file the %s report for browsing (%s). '
+                        'The canonical copy is still at %s',
                         source, ext, exc, src)
 
 
@@ -445,7 +454,15 @@ def audit_all(brief: dict, *, max_videos: int, force: bool = False,
     one; AUDITOR_AUDIT_WORKERS exists for a paid tier and defaults to 1.
     """
     ns = runtime.load()
-    videos = ns['discover_videos']()
+    # SCOPED, like phases 2 and 3. Unscoped this iterates every video with a
+    # manifest in the shared artifact store, so a job could audit -- and
+    # RETURN RESULTS FOR -- a video another job submitted. That is worse than
+    # the wasted work in phases 2/3: it puts someone else's creator in this
+    # caller's response, capped only by max_videos_per_job.
+    #
+    # It happened to line up on the runs measured here, because the store held
+    # one video. Lining up by accident is not the same as being right.
+    videos = _this_jobs_videos(ns)
     fixture = str(ns.get('TEST_VIDEO_NAME') or 'test_changing_text.mp4')
     videos = [v for v in videos if v.get('source') != fixture]
     if len(videos) > max_videos:
