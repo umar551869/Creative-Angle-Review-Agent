@@ -118,6 +118,40 @@ def run_preprocess(force: bool = False, progress: ProgressFn = _noop,
             'seconds': round(time.time() - t0, 2)}
 
 
+def _this_jobs_videos(ns) -> list:
+    """discover_videos(), narrowed to the videos THIS job actually submitted.
+
+    `discover_videos()` reads MANIFESTS out of the artifact store, which is
+    shared across jobs by design -- that is what makes the cache work. In the
+    notebook, where one run owns everything, "every manifest" and "my videos"
+    are the same set. Behind an API they are not.
+
+    Left unnarrowed, a job re-ran ASR and OCR for every video the server had
+    ever seen. Measured here: auditing one 65 s clip with force=True also
+    re-transcribed a previous job's video, and phase 2 took 344 s instead of
+    ~170 s. On a server holding 500 audited videos, "re-run this one" becomes
+    500 transcriptions and a proportional bill.
+
+    Falls back to the full set when the inbox is empty rather than returning
+    nothing: ephemeral mode deletes the inbox once a job finishes, and a
+    resumed or re-entered stage must not silently decide it has no work.
+    """
+    videos = ns['discover_videos']()
+    inbox_dir = ns['DIRS']['inbox']
+    try:
+        mine = {f.name for f in inbox_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in ns['VIDEO_SUFFIXES']}
+    except OSError:
+        return videos
+    if not mine:
+        return videos
+    scoped = [v for v in videos if v.get('source') in mine]
+    if len(scoped) < len(videos):
+        log.info('scoped to this job: %d of %d video(s) with a manifest',
+                 len(scoped), len(videos))
+    return scoped or videos
+
+
 def run_text_stages(force: bool = False,
                     progress: ProgressFn = _noop) -> dict:
     """Notebook cell 51. ASR for everything, free the model, then OCR for
@@ -126,7 +160,7 @@ def run_text_stages(force: bool = False,
     ns = runtime.load()
     progress('phase2', 'transcribing and reading on-screen text')
     t0 = time.time()
-    videos = ns['discover_videos']()
+    videos = _this_jobs_videos(ns)
     if not videos:
         raise PhaseError('phase2', 'no video has a Phase 1 manifest')
     df = ns['process_all'](videos, cfg=ns['P2'], force=force)
@@ -145,7 +179,10 @@ def run_vision(force: bool = False, progress: ProgressFn = _noop) -> dict:
     ns = runtime.load()
     progress('phase3', 'describing frames')
     t0 = time.time()
-    videos = ns['discover_videos']()          # UNIQUE: one manifest per video
+    # Scoped to this job, like phase 2 -- the hosted vision pass is 72-240 s
+    # per video, so re-describing another job's videos is the most expensive
+    # version of this mistake.
+    videos = _this_jobs_videos(ns)            # UNIQUE: one manifest per video
 
     # §30.5 also drops the notebook's own OCR fixture here. It cannot appear
     # in an API job (nothing writes it), but the guard is free and keeps the
@@ -167,6 +204,56 @@ def run_vision(force: bool = False, progress: ProgressFn = _noop) -> dict:
 # ---------------------------------------------------------------------------
 # Phases 5-7: per video. This is cell 147 (§90), field for field.
 # ---------------------------------------------------------------------------
+def _shelve_report(rp: dict, source: str, row: dict) -> None:
+    """Also drop the report into this job's reports/ under a READABLE name.
+
+    write_report stores it content-addressed:
+    artifacts/<64-char video hash>/report__<16-hex>.html. That is right for
+    the cache -- the same video and config reuse the same file -- and useless
+    to a human with only the backend, who has no way to know which hash is
+    which creator, and must call the API to find out.
+
+    So the canonical copy stays where it is and a readable one lands at
+    <data_root>/reports/<video-id>__<job_id>.html.
+
+    NOT under jobs/<id>/reports/, which was the first attempt and was exactly
+    backwards: _sweep_old_jobs() deletes that directory after
+    AUDITOR_KEEP_JOB_FILES_HOURS, so the copy a person browses would age out
+    while the hash-named one nobody can read survives indefinitely. The job
+    workspace is scratch; this is the deliverable.
+
+    The job id is in the FILENAME rather than the path so two audits of the
+    same video stay distinguishable and neither overwrites the other.
+
+    Copies, not links: Windows needs a privilege for symlinks that a service
+    account usually lacks, and a report is tens of KB. Never raises -- a
+    report written but not filed is a far smaller problem than a job that
+    fails at the very end because a copy did not land.
+    """
+    import shutil
+
+    job_dir = Path(runtime.load()['DIRS'].get('job') or '')
+    job_id = job_dir.name or 'job'
+    for key, ext in (('html_path', 'html'), ('json_path', 'json')):
+        src = (rp or {}).get(key)
+        if not src:
+            continue
+        try:
+            src = Path(src)
+            if not src.is_file():
+                continue
+            dest_dir = Path(runtime.load()['DIRS']['root']) / 'reports'
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            stem = Path(source).stem[:60] or 'video'
+            dest = dest_dir / f'{stem}__{job_id[:8]}.{ext}'
+            shutil.copy2(src, dest)
+            row[f'report_{ext}_file'] = str(dest)
+        except OSError as exc:
+            log.warning('%s: could not file the %s report for browsing (%s). '
+                        'The canonical copy is still at %s',
+                        source, ext, exc, src)
+
+
 def _verdict_out(v: dict) -> dict:
     """Notebook verdict -> VerdictOut, translating the two renamed fields.
 
@@ -183,7 +270,12 @@ def _verdict_out(v: dict) -> dict:
     """
     return {**v,
             'rationale': v.get('rationale') or v.get('reason') or '',
-            'decided_by': v.get('decided_by') or v.get('layer')}
+            'decided_by': v.get('decided_by') or v.get('layer'),
+            # `group` is the notebook's name; the schema says `group_id`. Found
+            # by auditing every field of every nested model against a live
+            # response instead of reading one by hand -- which is how the two
+            # above were found, one at a time.
+            'group_id': v.get('group_id') or v.get('group')}
 
 
 def audit_one(video: dict, brief: dict, *, force: bool = False,
@@ -303,6 +395,7 @@ def audit_one(video: dict, brief: dict, *, force: bool = False,
     fg = ns['build_figures'](sc, res, recs, cfg=P7)
     rp = ns['write_report'](video, res, brief, sc, recs, rec, fg, P7,
                             verbose=False)
+    _shelve_report(rp, name, row)
 
     s = sc['score']
     tp = ns['talking_point_coverage'](res, brief)
@@ -361,7 +454,15 @@ def audit_all(brief: dict, *, max_videos: int, force: bool = False,
     one; AUDITOR_AUDIT_WORKERS exists for a paid tier and defaults to 1.
     """
     ns = runtime.load()
-    videos = ns['discover_videos']()
+    # SCOPED, like phases 2 and 3. Unscoped this iterates every video with a
+    # manifest in the shared artifact store, so a job could audit -- and
+    # RETURN RESULTS FOR -- a video another job submitted. That is worse than
+    # the wasted work in phases 2/3: it puts someone else's creator in this
+    # caller's response, capped only by max_videos_per_job.
+    #
+    # It happened to line up on the runs measured here, because the store held
+    # one video. Lining up by accident is not the same as being right.
+    videos = _this_jobs_videos(ns)
     fixture = str(ns.get('TEST_VIDEO_NAME') or 'test_changing_text.mp4')
     videos = [v for v in videos if v.get('source') != fixture]
     if len(videos) > max_videos:

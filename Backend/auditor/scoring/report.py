@@ -20,7 +20,7 @@ import time
 
 import base64
 
-REPORT_HTML_VERSION = '1.1.1'   # header, wording, stylesheet, advice guard
+REPORT_HTML_VERSION = '1.1.2'   # advice cites the requirement by NAME, not id
 
 def esc(x) -> str:
     """Every string that reaches the page goes through here. No exceptions."""
@@ -753,12 +753,21 @@ def _recommendations_html(rec: dict, result: dict = None) -> str:
                      f'audit to generate the edits.')
         return _section('What to change',
                         f'<p class="ok-note">{esc(_note)}</p>')
+    # WHICH REQUIREMENT, in words. This printed `r_09c8913e` and a list of
+    # `ev_...` ids, which say nothing to the person being asked to re-shoot.
+    #
+    # It went unnoticed because every report until now had ZERO
+    # recommendations -- the model call that produces them was failing -- so
+    # the reader-facing id check passed on an empty section. The first report
+    # that actually carried advice leaked five raw ids.
+    _label_for = {v.get('requirement_id'): v.get('requirement_label')
+                  for v in ((result or {}).get('verdicts') or [])}
     items = ''.join(
         f'<li><div class="edit">{esc(r.get("edit"))}</div>'
         f'<div class="cites">{_ts_link(r.get("at_seconds"))} '
         f'<span class="tag">{esc(r.get("effort"))}</span> '
-        f'<span class="rid">{esc(r.get("requirement_id"))}</span> '
-        f'{esc(", ".join(r.get("evidence_ids") or []))}</div></li>'
+        f'<span class="sub">{esc(_label_for.get(r.get("requirement_id")) or "")}</span>'
+        f'</div></li>'
         for r in recs)
     keep = ''.join(f'<li>{esc(k)}</li>' for k in (rec.get('keep') or []))
     keephtml = (f'<div class="keep"><h4>Keep as it is</h4><ul>{keep}</ul></div>'

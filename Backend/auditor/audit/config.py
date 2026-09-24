@@ -58,7 +58,7 @@ except ImportError:                               # pragma: no cover
 #          FAILs from positive evidence are never promoted.
 # 1.9.0  + a figure-fidelity rule is judged against the BRIEF'S figures, not
 #          against its own match_hints, which are one compile's sample of them
-VERDICT_STAGE_VERSION = '1.22.0'  # + uncertain_rate over scoring units, not all requirements
+VERDICT_STAGE_VERSION = '1.23.0'  # L3 truncation re-balances modalities instead of slicing by rank
 
 ADJUDICATE_PROMPT_VERSION = 'p6_adjudicate_v1'
 

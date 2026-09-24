@@ -39,37 +39,53 @@ print('=' * 74)
 # ---------------------------------------------------------------------------
 print('\n1. IS THE GENERATED LAYER CURRENT WITH THE NOTEBOOK?')
 # ---------------------------------------------------------------------------
-from extract_from_notebook import CELL_MAP, EXCLUDED, is_definition  # noqa
+# THIS SECTION IS THE ONLY ONE THAT NEEDS THE NOTEBOOK, and the notebook lives
+# outside Backend/ -- it is not deployed, and a standalone checkout may not
+# have it at all. Hard-requiring it made the whole audit die with
+# FileNotFoundError on a backend that was in fact completely healthy: an audit
+# tool that cannot run says nothing, which is worse than one that runs and
+# reports what it could not check.
+#
+# So this degrades, loudly, and every other section still runs.
+if not NB.is_file():
+    print(f'  SKIP  {NB.name} is not present -- this backend is standalone.')
+    print('        Parity with the notebook cannot be checked here. Sections')
+    print('        2-8 below audit the package itself and all still apply.')
+    print('        Restore the notebook and re-run to check parity.')
+else:
+    from extract_from_notebook import CELL_MAP, EXCLUDED, is_definition  # noqa
 
-nb = json.loads(NB.read_text(encoding='utf-8'))
-code = [''.join(c['source'])
-        for c in nb['cells'] if c['cell_type'] == 'code']
-check('every notebook cell is mapped or excluded',
-      not [n for n in range(1, len(code) + 1)
-           if n not in CELL_MAP and n not in EXCLUDED],
-      f'{len(code)} cells, {len(CELL_MAP)} mapped, {len(EXCLUDED)} excluded')
+    nb = json.loads(NB.read_text(encoding='utf-8'))
+    code = [''.join(c['source'])
+            for c in nb['cells'] if c['cell_type'] == 'code']
+    check('every notebook cell is mapped or excluded',
+          not [n for n in range(1, len(code) + 1)
+               if n not in CELL_MAP and n not in EXCLUDED],
+          f'{len(code)} cells, {len(CELL_MAP)} mapped, '
+          f'{len(EXCLUDED)} excluded')
 
-# Re-derive each module from the notebook and compare to what is on disk.
-# If they differ, the package is stale -- which is invisible until a stage
-# behaves like last week's notebook.
-stale = []
-for n, rel in sorted(CELL_MAP.items()):
-    dest = HERE / 'auditor' / rel
-    if not dest.exists():
-        stale.append(f'{rel} MISSING')
-        continue
-    on_disk = dest.read_text(encoding='utf-8')
-    for node in ast.parse(code[n - 1]).body:
-        if not is_definition(node):
+    # Re-derive each module from the notebook and compare to what is on disk.
+    # If they differ, the package is stale -- which is invisible until a stage
+    # behaves like last week's notebook.
+    stale = []
+    for n, rel in sorted(CELL_MAP.items()):
+        dest = HERE / 'auditor' / rel
+        if not dest.exists():
+            stale.append(f'{rel} MISSING')
             continue
-        seg = ast.get_source_segment(code[n - 1], node) or ''
-        head = seg.splitlines()[0].strip() if seg else ''
-        if head and head not in on_disk:
-            stale.append(f'{rel} <- cell {n}: {head[:56]}')
-check('every kept definition is present on disk', not stale,
-      f'{len(CELL_MAP)} cells -> {len({v for v in CELL_MAP.values()})} modules')
-for s in stale[:8]:
-    print(f'          {s}')
+        on_disk = dest.read_text(encoding='utf-8')
+        for node in ast.parse(code[n - 1]).body:
+            if not is_definition(node):
+                continue
+            seg = ast.get_source_segment(code[n - 1], node) or ''
+            head = seg.splitlines()[0].strip() if seg else ''
+            if head and head not in on_disk:
+                stale.append(f'{rel} <- cell {n}: {head[:56]}')
+    check('every kept definition is present on disk', not stale,
+          f'{len(CELL_MAP)} cells -> '
+          f'{len({v for v in CELL_MAP.values()})} modules')
+    for s in stale[:8]:
+        print(f'          {s}')
 
 # ---------------------------------------------------------------------------
 print('\n2. DOES THE NAMESPACE LOAD, AND WITH WHAT?')

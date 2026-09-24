@@ -12,6 +12,20 @@ This file is LOADED BY auditor.runtime, not imported directly.
 The notebook shares one global namespace and binds some names
 late (globals().get(...)), so the loader reproduces that exactly
 rather than guessing an import graph that the original never had.
+
+!!! EDITED BY HAND, 2026-09-24 -- read this before regenerating !!!
+
+The source notebook is no longer in this repository, so it cannot be the
+source of truth and this package is. One deliberate change lives below,
+marked "BALANCE AT THE CAP":
+
+    escalate.append((rd, cands[:cfg.l3.max_candidates_per_requirement]))
+    -> escalate.append((rd, _balance_modalities(cands, ..., max_share)))
+
+If the notebook is ever restored and tools/extract_from_notebook.py is
+re-run, THIS FIX WILL BE SILENTLY OVERWRITTEN and the "Delicious Fruity
+Taste" class of false FAIL comes back. Port it into notebook cell 129
+first. tests/test_l3_candidate_balance.py fails if it is lost.
 """
 _STATUS_RANK = {'PASS': 0, 'PARTIAL': 1, 'UNCERTAIN': 2, 'FAIL': 3,
                 'NOT_APPLICABLE': 4}
@@ -139,7 +153,28 @@ def evaluate_requirements(video: dict, evidence: dict, compiled: dict,
             v.escalated_from = ['L1']
             verdicts.append(v)
             continue
-        escalate.append((rd, cands[:cfg.l3.max_candidates_per_requirement]))
+        # BALANCE AT THE CAP, do not slice by rank.
+        #
+        # `candidates_for` deliberately reserves slots per modality, because
+        # a video with 165 OCR fragments and 8 speech turns otherwise offers
+        # the judge nothing but packaging text. Slicing the balanced list
+        # `[:8]` by rank threw that away at the only point it mattered: the
+        # top 8 by cosine are OCR again, and the reserved speech slots fell
+        # off the end.
+        #
+        # Measured on this video, requirement "Delicious Fruity Taste":
+        # retrieval returned 6 ocr + 4 speech, the slice kept 6 ocr + 2
+        # speech, and the record that decides it -- "plus they love the
+        # flavor", at 41.44s -- was one of the two dropped. L3 then answered
+        # the question it was actually asked ("she does not mention taste in
+        # the speech evidence") and was right about what it had been shown.
+        # Three FAILs across three runs, none of them a judgement error.
+        #
+        # Re-balancing at the L3 cap applies the same rule that chose the
+        # candidates in the first place.
+        escalate.append((rd, _balance_modalities(
+            cands, cfg.l3.max_candidates_per_requirement,
+            getattr(cfg.retrieval, 'max_modality_share', 0.6))))
 
     # Every member of every choice group, so L3 can see the KIND of ask each
     # option is an example of. Built once from the resolved requirements, which
