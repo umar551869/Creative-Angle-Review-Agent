@@ -22,7 +22,12 @@ JOBS = (HERE / 'app' / 'jobs.py').read_text(encoding='utf-8')
 # Computed on the row but deliberately NOT returned. These are absolute paths
 # on the server's filesystem; the client gets report_html_url instead, which
 # jobs.py derives from them.
-SERVER_ONLY = {'report_html', 'report_json'}
+#
+# `report_html_file`/`report_json_file` are the readable copies filed under
+# jobs/<id>/reports/ for someone working on the box itself. Same reasoning:
+# a server path is for the operator, not for an API client.
+SERVER_ONLY = {'report_html', 'report_json',
+               'report_html_file', 'report_json_file'}
 
 
 def _row_keys() -> set[str]:
