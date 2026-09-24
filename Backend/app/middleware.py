@@ -61,23 +61,46 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 class BodySizeLimitMiddleware(BaseHTTPMiddleware):
     """Refuse an oversized body early, with a reason.
 
-    Every endpoint here takes a small JSON document -- a handful of URLs, or a
-    brief. Without a ceiling, an unauthenticated caller can make the process
-    buffer arbitrary bytes, and on a 512 MB free-tier container that is the
-    whole attack.
+    TWO ceilings, not one raised ceiling. Almost every endpoint takes a small
+    JSON document -- a handful of URLs, or a brief -- and without a limit an
+    unauthenticated caller can make the process buffer arbitrary bytes, which
+    on a small container is the whole attack.
+
+    The upload endpoint genuinely needs hundreds of megabytes. Raising the
+    global limit to cover it would re-open that attack on every JSON route, so
+    the larger ceiling applies ONLY to the paths that accept files. Anything
+    else stays at the small limit.
+
+    This checks the DECLARED content-length, which is a cheap early refusal and
+    not a guarantee: a chunked request declares nothing. The upload route
+    therefore counts bytes as it streams them and enforces the real per-file
+    limit itself -- this is the outer guard, not the only one.
     """
 
-    def __init__(self, app, max_bytes: int = 2 * 1024 * 1024):
+    def __init__(self, app, max_bytes: int = 2 * 1024 * 1024,
+                 upload_paths: tuple[str, ...] = (),
+                 upload_max_bytes: int | None = None):
         super().__init__(app)
         self.max_bytes = max_bytes
+        self.upload_paths = tuple(upload_paths)
+        self.upload_max_bytes = upload_max_bytes or max_bytes
+
+    def _limit_for(self, path: str) -> tuple[int, bool]:
+        if self.upload_paths and path.startswith(self.upload_paths):
+            return self.upload_max_bytes, True
+        return self.max_bytes, False
 
     async def dispatch(self, request, call_next):
+        limit, is_upload = self._limit_for(request.url.path)
         declared = request.headers.get('content-length')
-        if declared and declared.isdigit() and int(declared) > self.max_bytes:
+        if declared and declared.isdigit() and int(declared) > limit:
+            detail = (f'body exceeds {limit} bytes '
+                      f'({limit / 1048576:.0f} MB). ')
+            detail += ('Raise AUDITOR_MAX_UPLOAD_BYTES, or send fewer files '
+                       'per request.' if is_upload else
+                       'This endpoint takes URLs and brief text; post video '
+                       'files to /analyze/upload instead.')
             return JSONResponse(
                 status_code=413,
-                content={'error': 'PayloadTooLarge',
-                         'detail': f'body exceeds {self.max_bytes} bytes. '
-                                   f'This API takes URLs and brief text, not '
-                                   f'uploads.'})
+                content={'error': 'PayloadTooLarge', 'detail': detail})
         return await call_next(request)

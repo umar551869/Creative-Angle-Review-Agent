@@ -54,7 +54,11 @@ class Job:
         self.t0: Optional[float] = None
         self._t_end: Optional[float] = None
         self.deadline: Optional[float] = None
-        self.requested_videos = len(payload.get('video_urls') or [])
+        # Either links to fetch or files already staged in this job's inbox.
+        # The upload route rewrites this after streaming, because it cannot
+        # know how many files survived validation until they are written.
+        self.requested_videos = len(payload.get('video_urls')
+                                    or payload.get('uploads') or [])
         self.downloaded_videos = 0
         self.completed_videos = 0
         self.brief: Optional[dict] = None
@@ -176,6 +180,23 @@ class JobStore:
             self._jobs[job.id] = job
         job.persist()
         return job
+
+    def discard(self, job: Job) -> None:
+        """Forget a job that was created but never submitted.
+
+        The upload route has to create the job BEFORE it can stream files,
+        because the destination is jobs/<id>/inbox -- the id is the path. If
+        staging then fails (an oversized file, a client that hung up), the
+        record and its half-written bytes must not survive: a queued-looking
+        job that no worker will ever pick up is worse than no job at all.
+        """
+        with self._lock:
+            self._jobs.pop(job.id, None)
+        d = get_settings().jobs / job.id
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            log.warning('could not remove discarded job dir %s', d)
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
@@ -354,16 +375,26 @@ class JobStore:
         job.persist()
 
         # ---- 2. videos ---------------------------------------------------
+        # Two ways in, one shape out. Uploaded files are ALREADY in this job's
+        # inbox -- the request that accepted them wrote them there and checked
+        # their container bytes -- so there is nothing to fetch and no reason
+        # to involve yt-dlp, cookies or the network at all.
         self._check_deadline(job)
-        job.set_phase('ingest', f'{job.requested_videos} link(s)')
+        uploads = p.get('uploads') or []
         t = time.time()
-        dl = ingest.download_videos(p['video_urls'],
-                                    cookies_file=s.cookies_file,
-                                    workers=s.download_workers)
+        if uploads:
+            job.set_phase('ingest', f'{len(uploads)} uploaded file(s)')
+            dl = ingest.adopt_uploads()
+            detail = f'{len(dl["downloaded"])} uploaded'
+        else:
+            job.set_phase('ingest', f'{job.requested_videos} link(s)')
+            dl = ingest.download_videos(p['video_urls'],
+                                        cookies_file=s.cookies_file,
+                                        workers=s.download_workers)
+            detail = (f'{len(dl["downloaded"])} downloaded '
+                      f'({s.download_workers} worker(s))')
         job.downloaded_videos = len(dl['downloaded'])
-        job.time_phase('ingest', time.time() - t,
-                       f'{job.downloaded_videos} downloaded '
-                       f'({s.download_workers} worker(s))')
+        job.time_phase('ingest', time.time() - t, detail)
         for u in dl['failed_urls']:
             job.warn(f'could not download: {u}')
         job.persist()
@@ -398,7 +429,10 @@ class JobStore:
                                   deadline=job.deadline)
         job.time_phase('phase5-7', time.time() - t)
 
-        urls = p['video_urls']
+        # For an upload job `source_urls` carries the links the files came
+        # from, purely so a result row can still name its origin. Nothing
+        # fetches them.
+        urls = p.get('video_urls') or p.get('source_urls') or []
         for r in rows:
             r['url'] = ingest.url_for_source(r.get('source') or '', urls)
             for key, ext in (('report_html', 'html'), ('report_json', 'json')):

@@ -223,6 +223,11 @@ class VideoResultOut(BaseModel):
     url: Optional[str] = None
     status: str = Field(description='ok | module_failed | <error>')
     error: Optional[str] = None
+    phase: Optional[str] = Field(
+        None,
+        description='Which phase this video failed in, when it failed. '
+                    '"phase3" is the vision pass, "phase5-7" the audit and '
+                    'score.')
 
     score: ScoreOut = ScoreOut()
     standing: Optional[str] = None
@@ -235,6 +240,15 @@ class VideoResultOut(BaseModel):
     talking_points_covered: Optional[int] = None
     talking_points_total: Optional[int] = None
 
+    notes: list[str] = Field(
+        default=[],
+        description='Why a number needs explaining. A score of 0 with no '
+                    'standing is three different situations wearing one face '
+                    '-- no speech to judge, a failed model call, or a video '
+                    'that genuinely did none of it. When status is '
+                    '"module_failed" this says which, and a UI should show it '
+                    'instead of the score.')
+    duration_s: Optional[float] = None
     evidence_records: Optional[int] = None
     modality_health: dict[str, ModalityHealthOut] = {}
     can_fail_on: dict[str, bool] = Field(

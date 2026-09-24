@@ -112,6 +112,101 @@ def url_for_source(source: str, urls: list[str]) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Uploaded videos
+#
+# The alternative to downloading. A frontend that fetches the video itself and
+# posts the bytes avoids the one part of this pipeline that fails for reasons
+# nothing here controls: TikTok refuses anonymous downloads from datacentre IPs
+# far more often than from residential ones, which makes URL ingestion the
+# least reliable stage of a deployed run and the hardest to diagnose.
+# ---------------------------------------------------------------------------
+_UNSAFE_NAME = re.compile(r'[^A-Za-z0-9._-]+')
+
+
+def safe_upload_name(filename: str, taken: set) -> str:
+    """A client-supplied filename reduced to something safe to write.
+
+    Safety is the floor, not the point. `source` on every result row IS the
+    filename, and `url_for_source` maps a row back to its original link by
+    matching the leading video id -- so a frontend that saves its downloads as
+    `<video_id>.mp4` keeps that mapping for free. This therefore PRESERVES the
+    name wherever it can instead of generating an opaque one, and only
+    rewrites what is unsafe.
+
+    Rejects anything without a video extension rather than guessing: the
+    pipeline globs the inbox by suffix, so a file named `clip` is invisible to
+    Phase 1 and would fail later as "no video found" instead of here as "that
+    is not a video".
+    """
+    ns = runtime.load()
+    raw = Path(filename or '').name          # drop any directory component
+    cleaned = _UNSAFE_NAME.sub('_', raw).strip('._')
+    p = Path(cleaned or 'video')
+    suffix = p.suffix.lower()
+    if suffix not in ns['VIDEO_SUFFIXES']:
+        raise IngestError(
+            'upload',
+            f'{(filename or "")[:80]!r} has no recognised video extension. '
+            f'Accepted: {", ".join(sorted(ns["VIDEO_SUFFIXES"]))}.')
+    base = p.stem[:80] or 'video'
+    name = f'{base}{suffix}'
+    n = 1
+    while name in taken:
+        n += 1
+        name = f'{base}_{n}{suffix}'
+    return name
+
+
+def validate_video_file(path: Path) -> str:
+    """Confirm the bytes are a video, not just the filename.
+
+    An extension is a claim by the caller. `sniff_container` is the notebook's
+    own preflight check, reused rather than reimplemented, so an upload is held
+    to exactly the standard a downloaded file is. Rejecting here costs one
+    request; accepting a non-video means a job that dies in Phase 1 decode with
+    an ffmpeg error nobody can read.
+    """
+    ns = runtime.load()
+    if not ns['_is_video'](path.name):
+        raise IngestError('upload', f'{path.name!r} is not a video filename')
+    kind = ns['sniff_container'](path)
+    if not kind:
+        raise IngestError(
+            'upload',
+            f'{path.name!r} does not look like a video file: its first bytes '
+            f'match no known container (mp4/mov, matroska/webm, avi, '
+            f'mpeg-ts, flv). A partial or re-encoded download does this.')
+    return kind
+
+
+def adopt_uploads() -> dict:
+    """The upload equivalent of download_videos: what is actually in the inbox.
+
+    Shaped like `download_videos` so the worker treats both paths identically.
+    The files were written and validated by the request that staged them, so
+    this only confirms they survived -- the same question fix 56 settled on for
+    downloads: ask whether the artifact is there, not whether the call worked.
+    """
+    ns = runtime.load()
+    inbox = ns['DIRS']['inbox']
+    present = sorted(p for p in inbox.iterdir()
+                     if p.is_file() and ns['_is_video'](p.name)) \
+        if inbox.is_dir() else []
+    if not present:
+        raise IngestError(
+            'ingest',
+            'no uploaded video survived staging. The files were written to '
+            'this job\'s inbox and are gone -- check AUDITOR_DATA_ROOT is a '
+            'writable, persistent path and that nothing swept it.')
+    log.info('ingest: %d uploaded video(s) in the inbox', len(present))
+    return {
+        'downloaded': [str(p) for p in present],
+        'failed_urls': [],
+        'seconds': 0.0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Brief
 # ---------------------------------------------------------------------------
 def load_brief(*, brief_url: Optional[str] = None,
