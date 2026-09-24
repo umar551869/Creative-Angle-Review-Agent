@@ -10,7 +10,7 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > the browser.
 >
 > ```
-> AUDIT_API_URL = https://phantom-garage-learned-repository.trycloudflare.com
+> AUDIT_API_URL = https://thank-metro-sandra-textiles.trycloudflare.com
 > AUDIT_API_KEY = <ask Umar — sent separately, never committed>
 > ```
 >
@@ -21,11 +21,11 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > Check it works before writing any code:
 >
 > ```bash
-> curl https://phantom-garage-learned-repository.trycloudflare.com/ready
+> curl https://thank-metro-sandra-textiles.trycloudflare.com/ready
 > # {"ready":true,"namespace":"ready","ffmpeg":"...","auth":"1 key(s)",...}
 >
 > curl -H "x-api-key: $AUDIT_API_KEY" \
->      https://phantom-garage-learned-repository.trycloudflare.com/config
+>      https://thank-metro-sandra-textiles.trycloudflare.com/config
 > ```
 >
 > Verified through that URL, not assumed: `/health` 200, `/ready`
