@@ -2,6 +2,7 @@
 
     python tools/run_job.py --video <url> [--video <url> ...] --brief <docs url>
     python tools/run_job.py ... --brief-text "Show the product."
+    python tools/run_job.py            # no flags: asks for the links
 
 Uses the persistent data root, so artifacts are cached and a re-run of the
 same video against the same brief costs almost nothing.
@@ -25,7 +26,7 @@ def money(x, nd=0):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--video', action='append', required=True)
+    ap.add_argument('--video', action='append')
     ap.add_argument('--brief')
     ap.add_argument('--brief-text')
     ap.add_argument('--label', default='cli run')
@@ -34,6 +35,16 @@ def main() -> int:
     ap.add_argument('--timeout', type=int, default=40 * 60)
     ap.add_argument('--json-out', help='write the full job record here')
     args = ap.parse_args()
+
+    # No flags: prompt, so it can be run from a double-click or a bare cmd.
+    if not args.video:
+        raw = input('TikTok link(s), comma-separated: ').strip()
+        args.video = [u.strip() for u in raw.split(',') if u.strip()]
+        if not args.video:
+            print('no video link given')
+            return 1
+    if not args.brief and not args.brief_text:
+        args.brief = input('Brief (Google Docs link): ').strip() or None
 
     from fastapi.testclient import TestClient
 

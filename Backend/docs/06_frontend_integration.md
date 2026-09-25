@@ -10,7 +10,7 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > the browser.
 >
 > ```
-> AUDIT_API_URL = https://thank-metro-sandra-textiles.trycloudflare.com
+> AUDIT_API_URL = https://pac-night-haven-tom.trycloudflare.com
 > AUDIT_API_KEY = <ask Umar — sent separately, never committed>
 > ```
 >
@@ -21,16 +21,26 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > Check it works before writing any code:
 >
 > ```bash
-> curl https://thank-metro-sandra-textiles.trycloudflare.com/ready
+> curl https://pac-night-haven-tom.trycloudflare.com/ready
 > # {"ready":true,"namespace":"ready","ffmpeg":"...","auth":"1 key(s)",...}
 >
 > curl -H "x-api-key: $AUDIT_API_KEY" \
->      https://thank-metro-sandra-textiles.trycloudflare.com/config
+>      https://pac-night-haven-tom.trycloudflare.com/config
 > ```
 >
-> Verified through that URL, not assumed: `/health` 200, `/ready`
-> `{"ready":true}`, `/analyze/upload` present, and `/config` **401 without the
-> key, 200 with it**.
+> Verified through that URL on 2026-09-25, not assumed: `/health` 200,
+> `/ready` `{"ready":true,"problems":[]}`, `/analyze/upload` present (422 on
+> an empty POST, not 404), and `/config` **401 without the key, 200 with it**.
+> A full TikTok-link + Google-Doc-brief audit ran end to end the same day
+> (one video, ~5–10 min).
+>
+> What answers behind it is the **Docker container** on port 8000 (`/ready`
+> reports `ffmpeg: /usr/bin/ffmpeg`). A local `.venv` backend runs on
+> `127.0.0.1:8001` for testing only and is not reachable through the URL.
+> Never start the local one on 8000: on Windows its `127.0.0.1` bind beats
+> Docker's `0.0.0.0` bind, so the tunnel silently reaches the local process
+> while Docker looks healthy. `Backend\tools\start_local.ps1` restores this
+> layout after a reboot.
 >
 > ### Two things that will waste an hour if you don't know them
 >

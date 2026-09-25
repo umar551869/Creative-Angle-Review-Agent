@@ -17,6 +17,7 @@ server.log
 server.err
 server*.log
 tunnel*.log
+docker_build.log
 job_id.txt
 run2.json
 run_result_*.json

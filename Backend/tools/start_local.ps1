@@ -5,6 +5,11 @@
 # Both processes die with the machine, and the quick tunnel is issued a NEW
 # hostname every time it starts -- so the frontend's AUDIT_API_URL has to be
 # updated after every reboot. This prints the new URL at the end.
+#
+# Layout: Docker serves :8000 and is what the tunnel exposes. The local .venv
+# backend runs on :8001 for testing only. Never put the local one on 8000: on
+# Windows its 127.0.0.1 bind beats Docker's 0.0.0.0 bind, so the tunnel would
+# silently reach it instead of the container.
 
 $ErrorActionPreference = 'Continue'
 $Backend = Split-Path -Parent $PSScriptRoot
@@ -12,40 +17,48 @@ Set-Location $Backend
 
 Write-Host "`n=== Creative Angle Review Agent - local start ===`n"
 
+function Wait-Ready($port, $log) {
+    foreach ($i in 1..36) {
+        Start-Sleep -Seconds 5
+        try {
+            $r = Invoke-RestMethod -Uri "http://127.0.0.1:$port/ready" -TimeoutSec 5
+            if ($r.ready) {
+                Write-Host "  :$port READY   ffmpeg=$(if ($r.ffmpeg) {'found'} else {'MISSING'})  auth=$($r.auth)"
+                return $true
+            }
+        } catch { }
+    }
+    Write-Host "  :$port did not become ready; see $log" -ForegroundColor Red
+    return $false
+}
+
 # ---------------------------------------------------------------------------
-# 1. Backend
+# 1. Docker backend on :8000 (the one the tunnel serves)
 # ---------------------------------------------------------------------------
-$busy = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+docker compose up -d
+Write-Host "docker backend starting (~30-60s)..."
+if (-not (Wait-Ready 8000 "docker logs backend-api-1")) { exit 1 }
+
+# ---------------------------------------------------------------------------
+# 1b. Local .venv backend on :8001 (testing only, not tunnelled)
+# ---------------------------------------------------------------------------
+$busy = Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyContinue
 if ($busy) {
-    Write-Host "port 8000 already in use (pid $($busy[0].OwningProcess)) - stopping it"
+    Write-Host "port 8001 already in use (pid $($busy[0].OwningProcess)) - stopping it"
     Stop-Process -Id $busy[0].OwningProcess -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
 }
 
 Start-Process -FilePath ".\.venv\Scripts\python.exe" `
     -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1", `
-                  "--port","8000","--timeout-graceful-shutdown","25" `
-    -RedirectStandardOutput "server.out.log" `
-    -RedirectStandardError  "server.err.log" `
+                  "--port","8001","--timeout-graceful-shutdown","25" `
+    -RedirectStandardOutput "server8001.out.log" `
+    -RedirectStandardError  "server8001.err.log" `
     -WindowStyle Hidden
 
-Write-Host "backend starting (loads the pipeline namespace, ~10-20s)..."
-$ready = $false
-foreach ($i in 1..30) {
-    Start-Sleep -Seconds 5
-    try {
-        $r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/ready" -TimeoutSec 5
-        if ($r.ready) {
-            Write-Host "  READY   ffmpeg=$(if ($r.ffmpeg) {'found'} else {'MISSING'})  auth=$($r.auth)"
-            $ready = $true
-            break
-        }
-    } catch { }
-}
-if (-not $ready) {
-    Write-Host "  backend did not become ready; see server.err.log" -ForegroundColor Red
-    exit 1
-}
+Write-Host "local backend starting (loads the pipeline namespace, ~10-20s)..."
+# Not fatal: the tunnel only needs Docker.
+Wait-Ready 8001 "server8001.err.log" | Out-Null
 
 # ---------------------------------------------------------------------------
 # 2. Tunnel
