@@ -31,8 +31,9 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > Verified through that URL on 2026-09-25, not assumed: `/health` 200,
 > `/ready` `{"ready":true,"problems":[]}`, `/analyze/upload` present (422 on
 > an empty POST, not 404), and `/config` **401 without the key, 200 with it**.
-> A full TikTok-link + Google-Doc-brief audit ran end to end the same day
-> (one video, ~5–10 min).
+> A full audit ran end to end through this URL the same day: 3 TikTok links +
+> 1 dead link against a Google-Doc brief returned `angles` with all 4 named
+> angles and the dead link in `unplaced` (16.7 min on a first run).
 >
 > What answers behind it is the **Docker container** on port 8000 (`/ready`
 > reports `ffmpeg: /usr/bin/ffmpeg`). A local `.venv` backend runs on
@@ -78,7 +79,7 @@ report, and **which of the brief's creative angles the video fits**.
 
 ```
 Browser ──https──▶ Vercel Route Handler ──▶ Audit API ──▶ Gemini
-                   (holds the API key)      (5–12 min)
+                   (holds the API key)      (~5 min/video)
 ```
 
 **Never call the API from browser JavaScript.** Three reasons, each fatal:
@@ -89,7 +90,7 @@ Browser ──https──▶ Vercel Route Handler ──▶ Audit API ──▶ 
    quota becomes public.
 3. **CORS.** Avoided entirely — the browser only ever talks to your own origin.
 
-**A job takes 5–12 minutes.** Vercel functions time out at 10 s (Hobby) /
+**A job takes minutes — about 5 per video on a first run.** Vercel functions time out at 10 s (Hobby) /
 60–300 s (Pro). So: submit, get an id, **poll**. Never `await` a result inside
 a request handler.
 
@@ -464,6 +465,13 @@ total     184s
 ```
 
 Add ~60 s for a **cold** run (Whisper loads once) and ~2 min per extra video.
+
+**On the live backend (Docker, CPU only) it is slower — plan for ~5–6 min per
+video on a first run.** Measured through the public URL on 2026-09-25, 3
+videos + 1 dead link: brief 52 s · download 35 s · decode 53 s · speech/OCR
+583 s · vision 163 s · judging 114 s — **16.7 min total**. A video already
+processed once is much faster (its artifacts are cached). Jobs run one at a
+time; a second submission waits in the queue.
 
 ---
 
@@ -889,7 +897,7 @@ Rendering it — creative angle, then its video links:
 )}
 ```
 
-> Set expectations in the UI. **"This takes 5–12 minutes"** before they start
+> Set expectations in the UI. **"About 5 minutes per video"** before they start
 > beats a spinner that looks hung at minute four.
 
 ---
@@ -1114,7 +1122,7 @@ requirements, and an edited one is refused.
 - [ ] `AUDIT_API_URL` and `AUDIT_API_KEY` set in Vercel (no `NEXT_PUBLIC_`)
 - [ ] All calls go through Route Handlers — never browser → backend
 - [ ] Poll every 10–15 s; never `await` a job in a handler
-- [ ] UI says "5–12 minutes" before the user starts
+- [ ] UI says "about 5 minutes per video" before the user starts
 - [ ] Every request sends `ngrok-skip-browser-warning: 1`
 - [ ] On `succeeded`/`partial`, render `job.angles`: each angle, then its links
       (§3b) — including angles with no videos
