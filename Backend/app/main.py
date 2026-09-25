@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import (Depends, FastAPI, File as FileParam, Form, HTTPException,
-                     Path as PathParam, UploadFile)
+                     Path as PathParam, Request, UploadFile)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
@@ -34,6 +34,7 @@ from app.middleware import (BodySizeLimitMiddleware, RequestContextMiddleware)
 from app.schemas import (AnalyzeRequest, BriefCompileRequest, BriefOut,
                          JobAccepted, JobOut)
 from app.security import auth_mode, configured_keys, require_key
+from app.services import pipeline
 from auditor import runtime
 
 log = logging.getLogger('audit.api')
@@ -454,14 +455,50 @@ async def _stage_uploads(files: list, inbox: Path) -> list[str]:
     return saved
 
 
+_REPORTS_STAY_LOCAL = ('reports are kept on the host and are not served '
+                       'through the public URL; GET /jobs/{id} gives the '
+                       'angle groups')
+
+
+def _through_tunnel(request: Request) -> bool:
+    """Did this request arrive through the public tunnel?
+
+    ngrok and cloudflared both add X-Forwarded-For (cloudflared also
+    Cf-Connecting-Ip); a caller on the far side cannot strip them. A request
+    made on this machine carries neither.
+    """
+    h = request.headers
+    return any(k in h for k in ('x-forwarded-for', 'cf-connecting-ip',
+                                'forwarded'))
+
+
+def _angles_only(request: Request) -> bool:
+    return settings.public_view == 'angles' and _through_tunnel(request)
+
+
 @app.get('/jobs/{job_id}', response_model=JobOut, tags=['audit'],
          dependencies=[Depends(require_key)])
-def get_job(job_id: str = PathParam(..., min_length=8, max_length=64,
+def get_job(request: Request,
+            job_id: str = PathParam(..., min_length=8, max_length=64,
                                     pattern=r'^[A-Za-z0-9_-]+$')) -> JobOut:
     job = get_store().get(job_id)
     if job is None:
         raise HTTPException(404, f'no job {job_id}')
-    return JobOut(**job.to_dict())
+    d = job.to_dict()
+    # Only once the job is over: mid-run, a link with no row yet is not lost.
+    done = job.status in ('succeeded', 'partial', 'failed')
+    groups, unplaced = pipeline.angle_groups(
+        job.results,
+        submitted=d.get('video_urls') if done else None,
+        failed=job.failed_urls, job_error=job.error)
+    d.update(angles={g['angle']: g['videos'] for g in groups},
+             angle_groups=groups, unplaced=unplaced)
+    if _angles_only(request):
+        # The answer is which video is which angle. Scores, verdicts, the
+        # brief as compiled and the reports stay on this machine.
+        d.update(view='angles', results=[], brief=None, compiled_brief=None,
+                 angle_distribution=[], timings=[])
+    return JobOut(**d)
 
 
 @app.get('/jobs', tags=['audit'], dependencies=[Depends(require_key)])
@@ -474,7 +511,8 @@ def list_jobs(limit: int = 25) -> list[dict]:
 
 @app.get('/jobs/{job_id}/report/{filename}', tags=['audit'],
          dependencies=[Depends(require_key)])
-def get_report(job_id: str = PathParam(..., min_length=8, max_length=64,
+def get_report(request: Request,
+               job_id: str = PathParam(..., min_length=8, max_length=64,
                                        pattern=r'^[A-Za-z0-9_-]+$'),
                filename: str = PathParam(..., max_length=128,
                                          pattern=r'^[A-Za-z0-9._-]+$')):
@@ -486,6 +524,8 @@ def get_report(job_id: str = PathParam(..., min_length=8, max_length=64,
     comes from our own result row and is re-checked below, so this closes the
     one parameter that reached the filesystem unvalidated.
     """
+    if _angles_only(request):
+        raise HTTPException(403, _REPORTS_STAY_LOCAL)
     job = get_store().get(job_id)
     if job is None:
         raise HTTPException(404, f'no job {job_id}')
@@ -513,7 +553,8 @@ def get_report(job_id: str = PathParam(..., min_length=8, max_length=64,
 
 @app.get('/jobs/{job_id}/reports.zip', tags=['audit'],
          dependencies=[Depends(require_key)])
-def get_reports_zip(job_id: str = PathParam(..., min_length=8, max_length=64,
+def get_reports_zip(request: Request,
+                    job_id: str = PathParam(..., min_length=8, max_length=64,
                                             pattern=r'^[A-Za-z0-9_-]+$')):
     """Every report from this job, in one archive.
 
@@ -526,6 +567,8 @@ def get_reports_zip(job_id: str = PathParam(..., min_length=8, max_length=64,
 
     from fastapi.responses import StreamingResponse
 
+    if _angles_only(request):
+        raise HTTPException(403, _REPORTS_STAY_LOCAL)
     job = get_store().get(job_id)
     if job is None:
         raise HTTPException(404, f'no job {job_id}')

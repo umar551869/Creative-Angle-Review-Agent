@@ -65,6 +65,11 @@ class Job:
         self.compiled_brief: Optional[dict] = None
         self.results: list[dict] = []
         self.angle_distribution: list[dict] = []
+        # Links that never produced a result row (download failed) and short
+        # links resolved to their canonical URL -- both needed to answer
+        # "which of MY links is under which angle" for every link sent.
+        self.failed_urls: list[str] = []
+        self.resolved_urls: dict[str, str] = {}
         self.timings: list[dict] = []
         self.warnings: list[str] = []
         self.error: Optional[str] = None
@@ -112,6 +117,10 @@ class Job:
             'brief': self.brief, 'compiled_brief': self.compiled_brief,
             'results': self.results,
             'angle_distribution': self.angle_distribution,
+            'video_urls': list(self.payload.get('video_urls')
+                               or self.payload.get('source_urls') or []),
+            'failed_urls': self.failed_urls,
+            'resolved_urls': self.resolved_urls,
             'timings': self.timings, 'warnings': self.warnings,
             'error': self.error,
         }
@@ -136,7 +145,7 @@ class Job:
 _RESTORABLE = ('status', 'phase', 'label', 'created_at', 'started_at',
                'finished_at', 'requested_videos', 'downloaded_videos',
                'completed_videos', 'brief', 'results', 'angle_distribution',
-               'timings', 'warnings', 'error')
+               'failed_urls', 'resolved_urls', 'timings', 'warnings', 'error')
 
 
 def _restore(job_id: str) -> Optional[Job]:
@@ -149,7 +158,8 @@ def _restore(job_id: str) -> Optional[Job]:
     except Exception as exc:
         log.warning('job %s: unreadable record (%s)', job_id, exc)
         return None
-    job = Job(job_id, {'video_urls': [], 'label': raw.get('label')})
+    job = Job(job_id, {'video_urls': list(raw.get('video_urls') or []),
+                       'label': raw.get('label')})
     for k in _RESTORABLE:
         if k in raw:
             setattr(job, k, raw[k])
@@ -396,6 +406,8 @@ class JobStore:
                       f'({s.download_workers} worker(s))')
         job.downloaded_videos = len(dl['downloaded'])
         job.time_phase('ingest', time.time() - t, detail)
+        job.failed_urls = list(dl['failed_urls'])
+        job.resolved_urls = dict(dl.get('resolved') or {})
         for u in dl['failed_urls']:
             job.warn(f'could not download: {u}')
         job.persist()
@@ -435,7 +447,8 @@ class JobStore:
         # fetches them.
         urls = p.get('video_urls') or p.get('source_urls') or []
         for r in rows:
-            r['url'] = ingest.url_for_source(r.get('source') or '', urls)
+            r['url'] = ingest.url_for_source(r.get('source') or '', urls,
+                                             job.resolved_urls)
             for key, ext in (('report_html', 'html'), ('report_json', 'json')):
                 if r.get(key):
                     r[f'{key}_url'] = (f'/jobs/{job.id}/report/'

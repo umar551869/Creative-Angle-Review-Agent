@@ -302,6 +302,45 @@ class JobOut(BaseModel):
     timings: list[PhaseTiming] = []
     warnings: list[str] = []
     error: Optional[str] = None
+    failed_urls: list[str] = Field(
+        default=[], description='Submitted links that could not be downloaded.')
+    resolved_urls: dict[str, str] = Field(
+        default={}, description='Short links (vm.tiktok.com, /t/) and the '
+                                'full video URL each resolved to.')
+
+    angles: dict[str, list[str]] = Field(
+        default={},
+        description='THE ANSWER, in its simplest form: creative angle -> the '
+                    'links of the videos that fall under it, e.g. '
+                    '{"Angle 1": ["<link1>", "<link2>"], "Angle 2": '
+                    '["<link3>"]}. Keys are in the brief\'s order. The same '
+                    'data as angle_groups.')
+    view: str = Field(
+        'full',
+        description='"angles" when this response came through the public '
+                    'tunnel: only angle_groups is filled in, and results, '
+                    'brief and reports stay on the host. "full" otherwise.')
+    angle_groups: list[AngleGroupOut] = Field(
+        default=[],
+        description="Each of the brief's named angles with the links of the "
+                    'videos that fall under it. Filled in once videos finish.')
+    unplaced: list[UnplacedVideoOut] = Field(
+        default=[],
+        description='Videos that failed and so could not be put under an '
+                    'angle, with why.')
+
+
+class AngleGroupOut(BaseModel):
+    angle: str
+    videos: list[str] = []
+
+
+class UnplacedVideoOut(BaseModel):
+    video: Optional[str] = None
+    reason: Optional[str] = None
+
+
+JobOut.model_rebuild()
 
 
 class JobAccepted(BaseModel):

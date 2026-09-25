@@ -160,6 +160,15 @@ class Settings:
         # `compiled_brief` back on the next request instead (see /analyze).
         self.ephemeral = _flag('AUDITOR_EPHEMERAL', False)
 
+        # ---- what a request through the public tunnel may see -------------
+        # 'angles' (default): GET /jobs/{id} returns only which video falls
+        # under which creative angle; scores, verdicts and the HTML/JSON
+        # reports stay on this machine. 'full': the whole result, as before.
+        # Requests made on the host itself (no proxy headers) always get
+        # 'full', so local tools and reports keep working.
+        self.public_view = os.environ.get(
+            'AUDITOR_PUBLIC_VIEW', 'angles').strip().lower()
+
         # ---- job execution ------------------------------------------------
         # ONE by default. Videos are sequential within a job because
         # process_all() loads ASR once and frees it before loading OCR;
@@ -347,6 +356,7 @@ class Settings:
             'keep_job_files_hours': self.keep_job_files_hours,
             'keep_artifacts_days': self.keep_artifacts_days,
             'ephemeral': self.ephemeral,
+            'public_view': self.public_view,
             # Read LIVE, not from self.api_keys. Settings are cached for the
             # process; /ready reports auth from the environment. Two sources
             # that can disagree is how an operator ends up believing auth is

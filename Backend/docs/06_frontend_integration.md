@@ -31,8 +31,9 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > Verified through that URL on 2026-09-25, not assumed: `/health` 200,
 > `/ready` `{"ready":true,"problems":[]}`, `/analyze/upload` present (422 on
 > an empty POST, not 404), and `/config` **401 without the key, 200 with it**.
-> A full TikTok-link + Google-Doc-brief audit ran end to end the same day
-> (one video, ~5–10 min).
+> A full audit ran end to end through this URL the same day: 3 TikTok links +
+> 1 dead link against a Google-Doc brief returned `angles` with all 4 named
+> angles and the dead link in `unplaced` (16.7 min on a first run).
 >
 > What answers behind it is the **Docker container** on port 8000 (`/ready`
 > reports `ffmpeg: /usr/bin/ffmpeg`). A local `.venv` backend runs on
@@ -41,6 +42,10 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > Docker's `0.0.0.0` bind, so ngrok silently reaches the local process
 > while Docker looks healthy. `Backend\tools\start_local.ps1` restores this
 > layout after a reboot.
+>
+> **What you get back:** only which creative angle each video falls under,
+> as `angle_groups` (angle → the video links you sent). Scores and reports
+> stay on the backend machine. See **§3b** — that is the part to build against.
 >
 > ### Two things that will waste an hour if you don't know them
 >
@@ -74,7 +79,7 @@ report, and **which of the brief's creative angles the video fits**.
 
 ```
 Browser ──https──▶ Vercel Route Handler ──▶ Audit API ──▶ Gemini
-                   (holds the API key)      (5–12 min)
+                   (holds the API key)      (~5 min/video)
 ```
 
 **Never call the API from browser JavaScript.** Three reasons, each fatal:
@@ -85,7 +90,7 @@ Browser ──https──▶ Vercel Route Handler ──▶ Audit API ──▶ 
    quota becomes public.
 3. **CORS.** Avoided entirely — the browser only ever talks to your own origin.
 
-**A job takes 5–12 minutes.** Vercel functions time out at 10 s (Hobby) /
+**A job takes minutes — about 5 per video on a first run.** Vercel functions time out at 10 s (Hobby) /
 60–300 s (Pro). So: submit, get an id, **poll**. Never `await` a result inside
 a request handler.
 
@@ -300,24 +305,36 @@ did. `AUDITOR_FFMPEG_DIR` overrides the search.
 
 ## 2. Endpoints
 
-Base URL = wherever the backend runs. Auth is `x-api-key` on everything except
-the three ops endpoints.
+Base URL = `AUDIT_API_URL`. Send on every request:
 
-| Method | Path | Auth | Returns |
+```
+x-api-key: <AUDIT_API_KEY>            (all endpoints except /health, /ready, /metrics)
+ngrok-skip-browser-warning: 1
+```
+
+**The three you need** — submit, poll, read `angles`:
+
+| Method | Path | Send | Get back |
 |---|---|---|---|
-| `POST` | `/analyze` | key | `202` + `{job_id, status, poll}` — video **URLs** |
-| `POST` | `/analyze/upload` | key | `202`, same shape — video **files** (multipart) |
-| `GET` | `/jobs/{job_id}` | key | the whole job: status, phase, results |
-| `GET` | `/jobs` | key | recent jobs, newest first |
-| `GET` | `/jobs/{job_id}/report/{video_id}.html` | key | self-contained HTML report |
-| `GET` | `/jobs/{job_id}/report/{video_id}.json` | key | the same data as JSON |
-| `POST` | `/briefs/compile` | key | compile a brief alone, to preview requirements |
-| `GET` | `/health` | open | liveness — `{status, uptime_s}` |
-| `GET` | `/ready` | open | readiness — `503` until it can serve |
-| `GET` | `/metrics` | open | Prometheus text |
-| `GET` | `/config` | key | effective settings, keys as lengths |
+| `POST` | `/analyze` | JSON `{video_urls: [...], brief_url}` | `202` `{job_id, status, poll}` |
+| `GET` | `/jobs/{job_id}` | — | `{status, phase, ..., angles, angle_groups, unplaced}` — see §3b |
+| `GET` | `/ready` | — | `{ready: true, problems: []}` when the backend can take work |
 
-Interactive docs: `/docs`.
+**Everything else:**
+
+| Method | Path | Auth | Through the public URL |
+|---|---|---|---|
+| `POST` | `/analyze/upload` | key | ✅ same as `/analyze`, but you send video **files** (multipart) |
+| `GET` | `/jobs` | key | ✅ recent jobs `[{job_id, status, phase, label, created_at, videos}]` |
+| `POST` | `/briefs/compile` | key | ✅ compile a brief alone, to preview its requirements and named angles |
+| `GET` | `/health` | open | ✅ liveness `{status, uptime_s}` |
+| `GET` | `/metrics` | open | ✅ Prometheus text |
+| `GET` | `/config` | key | ✅ effective settings (secrets shown as lengths) |
+| `GET` | `/jobs/{job_id}/report/{video_id}.html` | key | ❌ `403` — reports stay on the host |
+| `GET` | `/jobs/{job_id}/report/{video_id}.json` | key | ❌ `403` — reports stay on the host |
+| `GET` | `/jobs/{job_id}/reports.zip` | key | ❌ `403` — reports stay on the host |
+
+Interactive docs (every field of every model): `/docs`.
 
 ### `POST /analyze`
 
@@ -403,6 +420,7 @@ container header is not a real video, or a 0-byte file. `413` if a file exceeds
 | `503` | still starting, or no `GEMINI_API_KEY` | poll `/ready` |
 | `413` | JSON body over 2 MB, or an upload over its own limit | the `detail` names which limit |
 | `404` | unknown job or report | |
+| `403` | a report URL requested through the public URL | reports are host-only by design; use `angles` |
 
 Two separate size ceilings, deliberately: `AUDITOR_MAX_BODY_BYTES` (2 MB) for
 JSON, and the much larger upload limits **only** on `/analyze/upload`. One
@@ -448,9 +466,107 @@ total     184s
 
 Add ~60 s for a **cold** run (Whisper loads once) and ~2 min per extra video.
 
+**On the live backend (Docker, CPU only) it is slower — plan for ~5–6 min per
+video on a first run.** Measured through the public URL on 2026-09-25, 3
+videos + 1 dead link: brief 52 s · download 35 s · decode 53 s · speech/OCR
+583 s · vision 163 s · judging 114 s — **16.7 min total**. A video already
+processed once is much faster (its artifacts are cached). Jobs run one at a
+time; a second submission waits in the queue.
+
 ---
 
-## 4. Reading a result
+## 3b. What the public URL returns — creative angles and video links only
+
+**This is the whole answer the frontend gets.** You send one brief and any
+number of video links; the backend processes them on Umar's machine and
+returns **each creative angle with the links of the videos under it**:
+
+```
+creative angle 1: video1_link, video2_link
+creative angle 2: video3_link
+...
+```
+
+**Input** — `POST /analyze`:
+
+```json
+{
+  "brief_url": "https://docs.google.com/document/d/<id>/edit",
+  "video_urls": [
+    "https://www.tiktok.com/@a/video/1",
+    "https://www.tiktok.com/@b/video/2",
+    "https://www.tiktok.com/@c/video/3"
+  ]
+}
+```
+
+→ `202 {"job_id": "f3d751d85d394ed7", "status": "queued", "poll": "/jobs/f3d751d85d394ed7"}`
+
+**Output** — poll `GET /jobs/{job_id}` every 10–15 s. While it runs, `status`
+is `queued`/`running` and `phase` says where it is. When `status` is
+`succeeded` (or `partial`), read **`angles`**:
+
+```jsonc
+{
+  "job_id": "f3d751d85d394ed7",
+  "status": "succeeded",
+  "view": "angles",
+
+  // THE ANSWER: angle -> links, keys in the brief's order
+  "angles": {
+    "He’s Not Ignoring Me… He’s Knocked Out": ["https://www.tiktok.com/@a/video/1",
+                                              "https://www.tiktok.com/@b/video/2"],
+    "Why I Stopped Giving My Kids Melatonin": [],
+    "Back to School Essentials":              ["https://www.tiktok.com/@c/video/3"],
+    "Back to School Bedtime Reset":           [],
+    "None of the brief's angles":             ["https://www.tiktok.com/@d/video/4"]
+  },
+
+  // the same data as an ordered array, if you prefer iterating a list
+  "angle_groups": [
+    { "angle": "He’s Not Ignoring Me… He’s Knocked Out",
+      "videos": ["https://www.tiktok.com/@a/video/1", "https://www.tiktok.com/@b/video/2"] },
+    { "angle": "Why I Stopped Giving My Kids Melatonin", "videos": [] },
+    { "angle": "Back to School Essentials",
+      "videos": ["https://www.tiktok.com/@c/video/3"] },
+    { "angle": "Back to School Bedtime Reset", "videos": [] },
+    { "angle": "None of the brief's angles",
+      "videos": ["https://www.tiktok.com/@d/video/4"] }
+  ],
+  "unplaced": [
+    { "video": "https://www.tiktok.com/@e/video/5", "reason": "could not download this link" }
+  ],
+  "results": [], "brief": null
+}
+```
+
+- **Every angle the brief names is listed**, in the brief's order, even with
+  no videos — "nobody used this concept" is part of the answer.
+- A video goes under its **dominant** angle (the one it fits most).
+  `"None of the brief's angles"` appears only when a video fits none of them.
+- `unplaced` lists videos that failed (bad link, download error) and so have
+  no angle. Show them; don't drop them silently.
+- The `videos` entries are the **same links you submitted**, character for
+  character — short links (`vm.tiktok.com/...`, `tiktok.com/t/...`) included;
+  the backend resolves them internally and hands back what you sent.
+- **Every submitted link appears exactly once**: under one angle, or in
+  `unplaced`. So `sum of all angles + unplaced == your links` (duplicates
+  counted once).
+- `angles` is filled in when the job finishes. While `status` is `queued` or
+  `running`, don't read it — it is empty or partial.
+- If `status` is `failed`, read `error` (a sentence for a human); `angles`
+  will be empty and `unplaced` lists the links.
+
+**Scores, verdicts and the HTML reports stay on Umar's machine.** Through the
+public URL, `results` is always `[]`, `brief` is `null`, and
+`/jobs/{id}/report/...` and `/jobs/{id}/reports.zip` return `403`. Sections 4–7
+below describe the full result, which is only visible on the host itself.
+(Controlled by `AUDITOR_PUBLIC_VIEW` in `Backend/.env`: `angles`, the default,
+or `full`.)
+
+---
+
+## 4. Reading a result (host only — see §3b)
 
 `job.results[]`, one entry per video. Abridged from a real response:
 
@@ -530,7 +646,7 @@ a human rather than quoting the number.
 
 ---
 
-## 5. The creative angle — what the user asked for
+## 5. The creative angle in detail (host only — the public answer is §3b)
 
 ```jsonc
 "creative_angle": {
@@ -603,7 +719,7 @@ across a batch.
 
 ---
 
-## 6. Verdicts
+## 6. Verdicts (host only)
 
 ```jsonc
 {
@@ -632,7 +748,11 @@ offered alternatives and she picked one. `chosen_options` summarises which.
 
 ---
 
-## 7. The HTML report
+## 7. The HTML report (host only)
+
+> **Not available through the public URL** — these routes return `403` there,
+> by design: reports stay on the backend machine. This section applies only
+> to a frontend running on that same machine (`AUDIT_API_URL=http://localhost:8000`).
 
 Self-contained: one file, no external assets, no JS dependencies. Serve it
 through your own route so the API key stays server-side.
@@ -751,13 +871,33 @@ const timer = setInterval(async () => {
   setProgress(`${job.completed_videos}/${job.requested_videos}`);
   if (['succeeded', 'partial', 'failed'].includes(job.status)) {
     clearInterval(timer);
-    setResults(job.results);
-    setWarnings(job.warnings);
+    setAngles(job.angles);        // { "angle name": ["link", ...], ... }
+    setUnplaced(job.unplaced);    // [{ video, reason }]
+    setError(job.error);          // only when status === 'failed'
   }
 }, 15_000);
 ```
 
-> Set expectations in the UI. **"This takes 5–12 minutes"** before they start
+Rendering it — creative angle, then its video links:
+
+```tsx
+{Object.entries(angles).map(([angle, links]) => (
+  <section key={angle}>
+    <h3>{angle} <small>({links.length})</small></h3>
+    {links.length
+      ? <ul>{links.map(l => <li key={l}><a href={l} target="_blank">{l}</a></li>)}</ul>
+      : <p>No videos used this angle.</p>}
+  </section>
+))}
+{unplaced.length > 0 && (
+  <section>
+    <h3>Could not be processed</h3>
+    <ul>{unplaced.map(u => <li key={u.video}>{u.video} — {u.reason}</li>)}</ul>
+  </section>
+)}
+```
+
+> Set expectations in the UI. **"About 5 minutes per video"** before they start
 > beats a spinner that looks hung at minute four.
 
 ---
@@ -982,11 +1122,11 @@ requirements, and an edited one is refused.
 - [ ] `AUDIT_API_URL` and `AUDIT_API_KEY` set in Vercel (no `NEXT_PUBLIC_`)
 - [ ] All calls go through Route Handlers — never browser → backend
 - [ ] Poll every 10–15 s; never `await` a job in a handler
-- [ ] UI says "5–12 minutes" before the user starts
-- [ ] `lead_with_band` → show the band, not the headline
-- [ ] `coverage < 1` surfaced; `UNCERTAIN` shown as abstention, not failure
-- [ ] `status: "module_failed"` → show `notes`, not a 0% chart
-- [ ] `matched_named_angle: false` rendered differently from "not judged"
-- [ ] `partial` → show the videos that did succeed
+- [ ] UI says "about 5 minutes per video" before the user starts
+- [ ] Every request sends `ngrok-skip-browser-warning: 1`
+- [ ] On `succeeded`/`partial`, render `job.angles`: each angle, then its links
+      (§3b) — including angles with no videos
+- [ ] `job.unplaced` shown ("could not be processed" + reason), never dropped
+- [ ] `failed` → show `job.error`
 - [ ] TikTok URLs validated client-side
-- [ ] Report iframe proxied through your own route
+- [ ] No calls to `/jobs/{id}/report/...` or `reports.zip` — `403` by design

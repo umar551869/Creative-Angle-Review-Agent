@@ -40,6 +40,28 @@ def _video_id(url: str) -> str:
     return m.group(1) if m else ''
 
 
+def resolve_short_link(url: str) -> str:
+    """vm.tiktok.com/XXXX and tiktok.com/t/XXXX carry no video id, so nothing
+    downstream can tell which downloaded file they became -- and with parallel
+    downloads, "the first file in the inbox" is some other link's video.
+    Follow the redirect once to the canonical /video/<id> URL. Any failure
+    returns the link unchanged; the download then decides.
+    """
+    if _video_id(url):
+        return url
+    try:
+        import requests
+        r = requests.get(url, allow_redirects=True, timeout=15, stream=True,
+                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; '
+                                  'Win64; x64) AppleWebKit/537.36 (KHTML, like '
+                                  'Gecko) Chrome/124.0 Safari/537.36'})
+        r.close()
+        return r.url if _video_id(r.url) else url
+    except Exception as exc:
+        log.warning('could not resolve %s: %s', url[:60], exc)
+        return url
+
+
 def download_videos(urls: list[str], *, cookies_file: str = '',
                     workers: int = 1) -> dict:
     """Fetch every URL into THIS job's inbox. Never raises on a bad link.
@@ -65,12 +87,15 @@ def download_videos(urls: list[str], *, cookies_file: str = '',
     inbox = ns['DIRS']['inbox']
     t0 = time.time()
 
+    resolved = {u: resolve_short_link(u) for u in urls}
+
     def _fetch(url: str) -> tuple[str, Optional[Path]]:
+        target = resolved[url]
         try:
-            ns['download_videos']([url], verbose=False)
+            ns['download_videos']([target], verbose=False)
         except Exception as exc:                 # it should not raise; belt
             log.warning('download raised for %s: %s', url[:60], exc)
-        vid = _video_id(url)
+        vid = _video_id(target)
         hit = next((p for p in sorted(inbox.iterdir())
                     if p.is_file() and ns['_is_video'](p.name)
                     and (not vid or p.stem.startswith(vid))), None)
@@ -97,15 +122,21 @@ def download_videos(urls: list[str], *, cookies_file: str = '',
     return {
         'downloaded': [str(p) for p in present],
         'failed_urls': failed,
+        # original link -> the link actually fetched (differs only for short
+        # links), so a result can be named by the link the caller sent.
+        'resolved': {u: t for u, t in resolved.items() if t != u},
         'seconds': round(time.time() - t0, 2),
     }
 
 
-def url_for_source(source: str, urls: list[str]) -> Optional[str]:
-    """Map a downloaded filename back to the URL that asked for it."""
+def url_for_source(source: str, urls: list[str],
+                   resolved: Optional[dict] = None) -> Optional[str]:
+    """Map a downloaded filename back to the URL that asked for it -- the
+    caller's own link, even when it was a short link that had to be resolved.
+    """
     stem = Path(source).stem
     for u in urls:
-        vid = _video_id(u)
+        vid = _video_id((resolved or {}).get(u) or u)
         if vid and stem.startswith(vid):
             return u
     return None
