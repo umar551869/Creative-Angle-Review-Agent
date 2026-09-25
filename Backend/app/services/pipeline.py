@@ -541,3 +541,34 @@ def angle_distribution(rows: list[dict]) -> list[dict]:
             'unused': not videos,
         })
     return sorted(out, key=lambda d: (-d['dominant_for'], -d['videos']))
+
+
+NO_ANGLE = "None of the brief's angles"
+
+
+def angle_groups(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Each of the brief's named angles -> the links of the videos that fall
+    under it, by dominant angle. Plus the videos that could not be placed.
+
+    This is the whole answer the public API gives: which video is which angle.
+    Every angle the brief names is listed, even with no videos, because "no
+    creator took this concept" is itself the finding.
+    """
+    named: list[str] = []
+    for r in rows:
+        for a in (r.get('creative_angle') or {}).get('named_angles') or []:
+            if a not in named:
+                named.append(a)
+    groups: dict[str, list[str]] = {a: [] for a in named}
+    unplaced: list[dict] = []
+    for r in rows:
+        link = r.get('url') or r.get('source') or r.get('video_id')
+        if r.get('status') != 'ok':
+            unplaced.append({'video': link,
+                             'reason': r.get('error') or r.get('status')})
+            continue
+        dom = (r.get('creative_angle') or {}).get('dominant_angle')
+        # The model's "none of the listed angles" (or no split at all) lands
+        # in one explicit bucket rather than vanishing from the answer.
+        groups.setdefault(dom if dom in groups else NO_ANGLE, []).append(link)
+    return ([{'angle': a, 'videos': v} for a, v in groups.items()], unplaced)

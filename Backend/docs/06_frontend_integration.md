@@ -42,6 +42,10 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > while Docker looks healthy. `Backend\tools\start_local.ps1` restores this
 > layout after a reboot.
 >
+> **What you get back:** only which creative angle each video falls under,
+> as `angle_groups` (angle → the video links you sent). Scores and reports
+> stay on the backend machine. See **§3b** — that is the part to build against.
+>
 > ### Two things that will waste an hour if you don't know them
 >
 > **1. This URL is fixed, but the machine behind it is not always on.** It is
@@ -450,7 +454,52 @@ Add ~60 s for a **cold** run (Whisper loads once) and ~2 min per extra video.
 
 ---
 
-## 4. Reading a result
+## 3b. What the public URL returns — creative angles and video links only
+
+**This is the whole answer the frontend gets.** Send the brief and the video
+links to `POST /analyze` as before; when `GET /jobs/{id}` says `succeeded`
+(or `partial`), read `angle_groups`:
+
+```jsonc
+{
+  "job_id": "f3d751d85d394ed7",
+  "status": "succeeded",
+  "view": "angles",
+  "angle_groups": [
+    { "angle": "He’s Not Ignoring Me… He’s Knocked Out",
+      "videos": ["https://www.tiktok.com/@a/video/1", "https://www.tiktok.com/@b/video/2"] },
+    { "angle": "Why I Stopped Giving My Kids Melatonin", "videos": [] },
+    { "angle": "Back to School Essentials",
+      "videos": ["https://www.tiktok.com/@c/video/3"] },
+    { "angle": "Back to School Bedtime Reset", "videos": [] },
+    { "angle": "None of the brief's angles",
+      "videos": ["https://www.tiktok.com/@d/video/4"] }
+  ],
+  "unplaced": [
+    { "video": "https://www.tiktok.com/@e/video/5", "reason": "download failed: ..." }
+  ],
+  "results": [], "brief": null
+}
+```
+
+- **Every angle the brief names is listed**, in the brief's order, even with
+  no videos — "nobody used this concept" is part of the answer.
+- A video goes under its **dominant** angle (the one it fits most).
+  `"None of the brief's angles"` appears only when a video fits none of them.
+- `unplaced` lists videos that failed (bad link, download error) and so have
+  no angle. Show them; don't drop them silently.
+- The `videos` entries are the **same links you submitted**.
+
+**Scores, verdicts and the HTML reports stay on Umar's machine.** Through the
+public URL, `results` is always `[]`, `brief` is `null`, and
+`/jobs/{id}/report/...` and `/jobs/{id}/reports.zip` return `403`. Sections 4–7
+below describe the full result, which is only visible on the host itself.
+(Controlled by `AUDITOR_PUBLIC_VIEW` in `Backend/.env`: `angles`, the default,
+or `full`.)
+
+---
+
+## 4. Reading a result (host only — see §3b)
 
 `job.results[]`, one entry per video. Abridged from a real response:
 
