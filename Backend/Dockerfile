@@ -13,22 +13,30 @@
 # baked in at build time. That is deliberate: downloading ~1.8 GB from Hugging
 # Face on every cold start would dominate the runtime of a scale-to-zero
 # deployment. Pass --build-arg BAKE_MODELS=false to trade image size for cold
-# start instead.
+# start instead. docker-compose.yml does exactly that: its audit-models volume
+# already holds the weights and outlives the image, so baking them again on
+# every rebuild only re-downloads 1.8 GB that is then hidden by the volume.
 
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS builder
 
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+# No PIP_NO_CACHE_DIR: the pip cache lives in a BuildKit cache mount below,
+# which is never part of an image layer, so it costs nothing in image size and
+# means a changed requirements.txt re-downloads only what actually changed.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY requirements.txt .
 
-# TORCH, ARCH-AWARE.
+# TORCH, ITS OWN LAYER, BEFORE requirements.txt IS COPIED. It is ~200 MB and
+# never changes with the rest of the requirements; in one RUN with them, adding
+# a single small package re-downloaded all of it and every other wheel -- over
+# an hour on a slow line.
+#
+# ARCH-AWARE.
 #
 # x86_64: the default PyPI wheel drags in ~2 GB of CUDA libraries this pipeline
 # never uses -- vision is hosted, Whisper runs CPU int8, BGE runs on CPU -- so
@@ -41,7 +49,8 @@ COPY requirements.txt .
 # resolver error. Verified: torch, ctranslate2, onnxruntime, av, opencv,
 # scipy, tokenizers and the rest all publish manylinux_*_aarch64 wheels, so
 # ARM installs from wheels with no compiler.
-RUN python -m venv /opt/venv \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
     && if [ "$(uname -m)" = "x86_64" ]; then \
          /opt/venv/bin/pip install torch \
@@ -49,8 +58,11 @@ RUN python -m venv /opt/venv \
        else \
          echo "aarch64: PyPI torch is already CPU-only" \
          && /opt/venv/bin/pip install torch; \
-       fi \
-    && /opt/venv/bin/pip install -r requirements.txt
+       fi
+
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /opt/venv/bin/pip install -r requirements.txt
 
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime

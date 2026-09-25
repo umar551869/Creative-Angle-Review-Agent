@@ -3,7 +3,10 @@ services:
     build:
       context: .
       args:
-        BAKE_MODELS: "true"
+        # false: the audit-models volume below already holds the weights and
+        # is mounted over /models, so baked weights would never be read. On a
+        # fresh machine (empty volume) they download on first use instead.
+        BAKE_MODELS: "false"
     ports:
       - "8000:8000"
     env_file: .env
@@ -11,12 +14,18 @@ services:
       AUDITOR_DATA_ROOT: /data
       HF_HOME: /models
       AUDITOR_LOG_JSON: "true"
+      # Overrides the Windows path in .env; the file is mounted below.
+      AUDITOR_COOKIES_FILE: /app/cookies.txt
     volumes:
       # Named volumes, NOT bind mounts. artifacts/ is the content-addressed
       # cache and models/ is ~1.8 GB of weights -- both must survive a
       # container replacement or every run pays full price again.
       - audit-data:/data
       - audit-models:/models
+      # TikTok login cookies. A bind mount, not baked in (.dockerignore keeps
+      # it out of the image). Writable because yt-dlp saves refreshed cookies
+      # back to the file.
+      - ./cookies.txt:/app/cookies.txt
     restart: unless-stopped
     stop_grace_period: 30s
     healthcheck:
