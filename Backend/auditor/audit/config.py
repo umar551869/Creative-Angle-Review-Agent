@@ -58,7 +58,15 @@ except ImportError:                               # pragma: no cover
 #          FAILs from positive evidence are never promoted.
 # 1.9.0  + a figure-fidelity rule is judged against the BRIEF'S figures, not
 #          against its own match_hints, which are one compile's sample of them
-VERDICT_STAGE_VERSION = '1.23.0'  # L3 truncation re-balances modalities instead of slicing by rank
+# 1.23.0 + the L3 candidate cap RE-BALANCES modalities instead of slicing the
+#          balanced list by rank, which had been discarding the reserved
+#          speech slots and producing confident FAILs from evidence the
+#          adjudicator was never shown
+# 1.24.0 + the creative angle is shown ON-SCREEN TEXT. It was given speech and
+#          visual only, while the failure path claimed to consider "speech,
+#          text or visual" -- and on TikTok the hook caption is often the
+#          clearest statement of the creative concept
+VERDICT_STAGE_VERSION = '1.24.0'
 
 ADJUDICATE_PROMPT_VERSION = 'p6_adjudicate_v1'
 

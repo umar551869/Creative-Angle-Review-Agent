@@ -378,8 +378,30 @@ def evaluate_creative_angle(records: list, compiled: dict, result: dict,
                    flags=out['flags'] + ['ANGLE_NOT_JUDGED'], layer='L1')
         return out
 
+    # ON-SCREEN TEXT IS ANGLE EVIDENCE, and was being withheld from the one
+    # judgement that asks "which of the brief's concepts is this video".
+    #
+    # `_usable` three lines up already counts ocr as evidence, and the failure
+    # message says "No speech, text or visual evidence" -- but the candidate
+    # list was speech + visual only, so the text was never shown. Same shape as
+    # the L3 truncation bug: the record that decides the question never reaches
+    # the judge, which then answers honestly about what it was given.
+    #
+    # It matters most on exactly this platform. Measured on
+    # 7672157062691818782: the overlay reads "Before you give your kids
+    # melatonin, watch this" -- a near-verbatim match for the brief's named
+    # angle "Why I Stopped Giving My Kids Melatonin" -- and the angle came back
+    # "none of the listed angles" at 100%. On TikTok the hook caption is
+    # frequently a clearer statement of the creative concept than the speech.
+    #
+    # EARLIEST FIRST, unlike the other two. The concept-declaring overlay is a
+    # title card; packaging text and ingredient panels come later and are about
+    # the product, not the angle.
+    _ocr = sorted((r for r in records if r.modality == 'ocr'),
+                  key=lambda r: getattr(r, 'start_seconds', 0.0) or 0.0)
     cands = (speech[:cfg.retrieval.top_k]
-             + [r for r in records if r.modality == 'visual'][:cfg.retrieval.top_k])
+             + [r for r in records if r.modality == 'visual'][:cfg.retrieval.top_k]
+             + _ocr[:cfg.retrieval.top_k])
     lines = ['EVIDENCE FROM THE VIDEO:']
     lines += [_evidence_line(c) for c in cands] or ['  (none)']
     lines += ['', 'CONCEPTS THE BRIEF OFFERED:']

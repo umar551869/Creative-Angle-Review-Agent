@@ -10,7 +10,7 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > the browser.
 >
 > ```
-> AUDIT_API_URL = https://phantom-garage-learned-repository.trycloudflare.com
+> AUDIT_API_URL = https://atlantic-canine-hurling.ngrok-free.dev
 > AUDIT_API_KEY = <ask Umar — sent separately, never committed>
 > ```
 >
@@ -21,33 +21,48 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > Check it works before writing any code:
 >
 > ```bash
-> curl https://phantom-garage-learned-repository.trycloudflare.com/ready
+> curl -H "ngrok-skip-browser-warning: 1" https://atlantic-canine-hurling.ngrok-free.dev/ready
 > # {"ready":true,"namespace":"ready","ffmpeg":"...","auth":"1 key(s)",...}
 >
-> curl -H "x-api-key: $AUDIT_API_KEY" \
->      https://phantom-garage-learned-repository.trycloudflare.com/config
+> curl -H "x-api-key: $AUDIT_API_KEY" -H "ngrok-skip-browser-warning: 1" \
+>      https://atlantic-canine-hurling.ngrok-free.dev/config
 > ```
 >
-> Verified through that URL, not assumed: `/health` 200, `/ready`
-> `{"ready":true}`, `/analyze/upload` present, and `/config` **401 without the
-> key, 200 with it**.
+> Verified through that URL on 2026-09-25, not assumed: `/health` 200,
+> `/ready` `{"ready":true,"problems":[]}`, `/analyze/upload` present (422 on
+> an empty POST, not 404), and `/config` **401 without the key, 200 with it**.
+> A full TikTok-link + Google-Doc-brief audit ran end to end the same day
+> (one video, ~5–10 min).
+>
+> What answers behind it is the **Docker container** on port 8000 (`/ready`
+> reports `ffmpeg: /usr/bin/ffmpeg`). A local `.venv` backend runs on
+> `127.0.0.1:8001` for testing only and is not reachable through the URL.
+> Never start the local one on 8000: on Windows its `127.0.0.1` bind beats
+> Docker's `0.0.0.0` bind, so ngrok silently reaches the local process
+> while Docker looks healthy. `Backend\tools\start_local.ps1` restores this
+> layout after a reboot.
 >
 > ### Two things that will waste an hour if you don't know them
 >
-> **1. This URL is temporary.** It is a Cloudflare quick tunnel to a backend
-> running on Umar's machine. It dies when the tunnel stops, the machine sleeps,
-> or it reboots, and a *different* URL is issued next time. Two things must
-> both be true for it to answer: the backend is running **and** the tunnel is
-> running. A connection error is almost always that — ask for the current URL
-> before debugging your own code. §1b has the named-tunnel setup for a
-> hostname that never changes.
+> **1. This URL is fixed, but the machine behind it is not always on.** It is
+> an ngrok static domain (free plan) to a backend on Umar's machine, so the
+> hostname never changes — set it in Vercel once. It still stops answering
+> when the machine sleeps or reboots, until `tools\start_local.ps1` is re-run.
+> Two things must both be true for it to answer: Docker is running **and**
+> ngrok is running. A connection error (or ngrok's "endpoint offline" page) is
+> almost always that — ask before debugging your own code.
+>
+> Send **`ngrok-skip-browser-warning: 1`** on every request. Without it a
+> browser-like request gets ngrok's HTML interstitial instead of JSON. Vercel's
+> server-side `fetch` usually isn't affected, but the header costs nothing.
 >
 > **2. The key above is the BACKEND key, not the Gemini key.** It gates this
 > API. It does not expose the Gemini credential, and it is rotatable in one
 > line (`AUDITOR_API_KEYS` in `Backend/.env`, then restart). Still treat it as
 > a secret: anyone holding it can queue jobs and spend the Gemini quota behind
-> it. **Do not commit this file** — it is deliberately untracked and listed in
-> `.gitignore`. Share it directly, not through a public repo.
+> it. **Never commit `Backend/.env`** (it holds this key and the Gemini key) —
+> it is deliberately untracked and listed in `.gitignore`. Share the key by
+> direct message, not through the repo.
 
 The user pastes **one or more TikTok links** plus **one content brief**, and
 gets back, per video: a score, timestamped requirement verdicts, an HTML
@@ -105,9 +120,16 @@ cloudflared tunnel --url http://localhost:8000
 It prints a URL like `https://random-words-1234.trycloudflare.com`. That is
 your `AUDIT_API_URL`. Free, no account, HTTPS terminated for you.
 
-**The URL changes every restart.** For something stable, a free Cloudflare
-account plus a named tunnel gives a fixed hostname you can leave in Vercel's
-env vars:
+**The URL changes every restart.** For something stable, either use a free
+ngrok account's static domain (what this project uses — no domain needed):
+
+```bash
+winget install Ngrok.Ngrok && ngrok update
+ngrok config add-authtoken <token from dashboard.ngrok.com>
+ngrok http http://127.0.0.1:8000 --url https://<your-name>.ngrok-free.dev
+```
+
+or, if you own a domain on Cloudflare, a named Cloudflare tunnel:
 
 ```bash
 cloudflared tunnel login
@@ -166,9 +188,8 @@ Use it only for a single-user local tool where you accept the key exposure.
 
 ## 1c. Keeping the backend running
 
-Two ways. The venv is what has actually been run and timed on this machine; the
-container is the Dockerfile as written — **it has not been built here**, because
-Docker is not installed on this box.
+Two ways. On this machine the **container serves port 8000** (what the public
+URL reaches) and the venv runs on **8001** for local testing only.
 
 ### Docker Compose (for a machine that should keep serving)
 
@@ -186,8 +207,8 @@ wsl --install        # elevated; REBOOT afterwards
 # then start Docker Desktop and accept its terms
 ```
 
-A reboot also kills the backend and the tunnel — restart both after, and the
-quick-tunnel URL will be a new one.
+A reboot also stops the tunnel. Run `tools\start_local.ps1` afterwards; the
+ngrok URL is fixed, so nothing changes in Vercel.
 
 From `Backend/`:
 
@@ -357,7 +378,7 @@ fd.append('source_urls', JSON.stringify(urls));
 
 await fetch(`${process.env.AUDIT_API_URL}/analyze/upload`, {
   method: 'POST',
-  headers: { 'x-api-key': process.env.AUDIT_API_KEY! },   // no Content-Type:
+  headers: { 'x-api-key': process.env.AUDIT_API_KEY!, 'ngrok-skip-browser-warning': '1' },   // no Content-Type:
   body: fd,                                              // fetch sets the
 });                                                      // multipart boundary
 ```
@@ -623,7 +644,7 @@ export async function GET(_req: NextRequest,
   const { jobId, file } = await params;
   const r = await fetch(
     `${process.env.AUDIT_API_URL}/jobs/${jobId}/report/${file}`,
-    { headers: { 'x-api-key': process.env.AUDIT_API_KEY! },
+    { headers: { 'x-api-key': process.env.AUDIT_API_KEY!, 'ngrok-skip-browser-warning': '1' },
       cache: 'no-store' });
   return new NextResponse(r.body, {
     status: r.status,
@@ -641,7 +662,7 @@ it as a download.
 ## 8. Vercel Route Handlers
 
 ```
-AUDIT_API_URL = https://<your-tunnel>.trycloudflare.com    (no NEXT_PUBLIC_)
+AUDIT_API_URL = https://atlantic-canine-hurling.ngrok-free.dev    (no NEXT_PUBLIC_)
 AUDIT_API_KEY = <the AUDITOR_API_KEYS value>
 ```
 
@@ -678,7 +699,8 @@ export async function POST(req: NextRequest) {
   const res = await fetch(`${process.env.AUDIT_API_URL}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json',
-               'x-api-key': process.env.AUDIT_API_KEY! },
+               'x-api-key': process.env.AUDIT_API_KEY!,
+               'ngrok-skip-browser-warning': '1' },
     body: JSON.stringify({
       video_urls: urls,
       brief_url: body.brief_url,
@@ -706,7 +728,7 @@ export async function GET(_req: NextRequest,
     return NextResponse.json({ error: 'bad job id' }, { status: 400 });
   }
   const res = await fetch(`${process.env.AUDIT_API_URL}/jobs/${jobId}`, {
-    headers: { 'x-api-key': process.env.AUDIT_API_KEY! },
+    headers: { 'x-api-key': process.env.AUDIT_API_KEY!, 'ngrok-skip-browser-warning': '1' },
     cache: 'no-store',
     signal: AbortSignal.timeout(20_000),
   });

@@ -333,6 +333,10 @@ class Settings:
             'max_videos_per_job': self.max_videos_per_job,
             'brief_compile_runs': self.brief_compile_runs,
             'brief_keep_threshold': self.brief_keep_threshold,
+            # Exposed because it changes what a score MEANS: with it on, two
+            # jobs are measured against different requirement sets. An
+            # operator must be able to see which mode a server is in.
+            'always_recompile_brief': self.always_recompile_brief,
             'max_concurrent_jobs': self.max_concurrent_jobs,
             'cookies_file': self.cookies_file or '(none)',
             'workers': {'download': self.download_workers,
