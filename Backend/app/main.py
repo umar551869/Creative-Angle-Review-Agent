@@ -485,8 +485,14 @@ def get_job(request: Request,
     if job is None:
         raise HTTPException(404, f'no job {job_id}')
     d = job.to_dict()
-    groups, unplaced = pipeline.angle_groups(job.results)
-    d.update(angle_groups=groups, unplaced=unplaced)
+    # Only once the job is over: mid-run, a link with no row yet is not lost.
+    done = job.status in ('succeeded', 'partial', 'failed')
+    groups, unplaced = pipeline.angle_groups(
+        job.results,
+        submitted=d.get('video_urls') if done else None,
+        failed=job.failed_urls, job_error=job.error)
+    d.update(angles={g['angle']: g['videos'] for g in groups},
+             angle_groups=groups, unplaced=unplaced)
     if _angles_only(request):
         # The answer is which video is which angle. Scores, verdicts, the
         # brief as compiled and the reports stay on this machine.

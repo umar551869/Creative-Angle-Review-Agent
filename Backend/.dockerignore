@@ -4,6 +4,9 @@
 .venv/
 data/
 .env
+# Mounted at run time by docker-compose, never baked into an image layer.
+cookies.txt
+*cookies*.txt
 .git/
 .gitignore
 __pycache__/

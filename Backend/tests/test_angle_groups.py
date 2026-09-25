@@ -52,6 +52,37 @@ def test_groups_videos_under_their_dominant_angle():
     assert [g['angle'] for g in groups] == ANGLES + [NO_ANGLE]
 
 
+def test_every_submitted_link_is_accounted_for():
+    """A link that never became a result row (download failed) must still
+    appear -- in `unplaced` -- or the answer silently loses a video."""
+    submitted = [r['url'] for r in ROWS] + ['https://t/v6', 'https://t/v7',
+                                            'https://t/v6']
+    groups, unplaced = angle_groups(ROWS, submitted=submitted,
+                                    failed=['https://t/v6'])
+    placed = [u for g in groups for u in g['videos']]
+    assert sorted(placed + [u['video'] for u in unplaced]) == \
+        sorted(dict.fromkeys(submitted))
+    reasons = {u['video']: u['reason'] for u in unplaced}
+    assert reasons['https://t/v6'] == 'could not download this link'
+    assert 'dropped' in reasons['https://t/v7']
+
+
+def test_a_failed_job_gives_its_error_as_the_reason():
+    groups, unplaced = angle_groups([], submitted=['https://t/a', 'https://t/b'],
+                                    job_error='no video could be downloaded')
+    assert groups == []
+    assert [u['reason'] for u in unplaced] == ['no video could be downloaded'] * 2
+
+
+def test_short_link_maps_back_to_the_link_that_was_sent():
+    from app.services.ingest import url_for_source
+    short = 'https://vm.tiktok.com/ZMabcDEF/'
+    full = 'https://www.tiktok.com/@x/video/7677937368036347167'
+    assert url_for_source('7677937368036347167.mp4', [short],
+                          {short: full}) == short
+    assert url_for_source('7677937368036347167.mp4', [short]) is None
+
+
 @pytest.fixture(scope='module')
 def client():
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -86,6 +117,13 @@ def test_tunnel_request_gets_only_the_angle_groups(client, job_id, proxy):
     body = client.get(f'/jobs/{job_id}', headers=_h(proxy)).json()
     assert body['view'] == 'angles'
     assert body['results'] == [] and body['brief'] is None
+    # The shape the frontend reads: angle -> links, brief order preserved.
+    assert body['angles'] == {
+        'Knocked Out': ['https://t/v1', 'https://t/v2'],
+        'Stopped Melatonin': [],
+        'Back to School': ['https://t/v3'],
+        NO_ANGLE: ['https://t/v4']}
+    assert list(body['angles']) == ANGLES + [NO_ANGLE]
     assert body['angle_groups'][0] == {'angle': 'Knocked Out',
                                        'videos': ['https://t/v1',
                                                   'https://t/v2']}

@@ -302,7 +302,19 @@ class JobOut(BaseModel):
     timings: list[PhaseTiming] = []
     warnings: list[str] = []
     error: Optional[str] = None
+    failed_urls: list[str] = Field(
+        default=[], description='Submitted links that could not be downloaded.')
+    resolved_urls: dict[str, str] = Field(
+        default={}, description='Short links (vm.tiktok.com, /t/) and the '
+                                'full video URL each resolved to.')
 
+    angles: dict[str, list[str]] = Field(
+        default={},
+        description='THE ANSWER, in its simplest form: creative angle -> the '
+                    'links of the videos that fall under it, e.g. '
+                    '{"Angle 1": ["<link1>", "<link2>"], "Angle 2": '
+                    '["<link3>"]}. Keys are in the brief\'s order. The same '
+                    'data as angle_groups.')
     view: str = Field(
         'full',
         description='"angles" when this response came through the public '

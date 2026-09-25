@@ -546,13 +546,19 @@ def angle_distribution(rows: list[dict]) -> list[dict]:
 NO_ANGLE = "None of the brief's angles"
 
 
-def angle_groups(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+def angle_groups(rows: list[dict], submitted: Optional[list[str]] = None,
+                 failed: Optional[list[str]] = None,
+                 job_error: Optional[str] = None
+                 ) -> tuple[list[dict], list[dict]]:
     """Each of the brief's named angles -> the links of the videos that fall
     under it, by dominant angle. Plus the videos that could not be placed.
 
     This is the whole answer the public API gives: which video is which angle.
     Every angle the brief names is listed, even with no videos, because "no
-    creator took this concept" is itself the finding.
+    creator took this concept" is itself the finding. Every SUBMITTED link
+    lands somewhere: under an angle, or in `unplaced` with the reason -- a
+    link that failed to download has no result row and would otherwise just
+    vanish from the answer.
     """
     named: list[str] = []
     for r in rows:
@@ -571,4 +577,14 @@ def angle_groups(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         # The model's "none of the listed angles" (or no split at all) lands
         # in one explicit bucket rather than vanishing from the answer.
         groups.setdefault(dom if dom in groups else NO_ANGLE, []).append(link)
+    seen = {r.get('url') for r in rows}
+    failed_set = set(failed or [])
+    for u in dict.fromkeys(submitted or []):     # de-duplicated, in order
+        if u not in seen:
+            unplaced.append({'video': u, 'reason': (
+                'could not download this link' if u in failed_set else
+                # The whole job died (e.g. nothing downloadable, brief
+                # unreadable): its error is the real reason for every link.
+                job_error if job_error else
+                'dropped before the audit (unreadable video); see warnings')})
     return ([{'angle': a, 'videos': v} for a, v in groups.items()], unplaced)
