@@ -60,8 +60,9 @@ For whoever builds the Vercel app — human or agent. Everything here is from a
 > API. It does not expose the Gemini credential, and it is rotatable in one
 > line (`AUDITOR_API_KEYS` in `Backend/.env`, then restart). Still treat it as
 > a secret: anyone holding it can queue jobs and spend the Gemini quota behind
-> it. **Do not commit this file** — it is deliberately untracked and listed in
-> `.gitignore`. Share it directly, not through a public repo.
+> it. **Never commit `Backend/.env`** (it holds this key and the Gemini key) —
+> it is deliberately untracked and listed in `.gitignore`. Share the key by
+> direct message, not through the repo.
 
 The user pastes **one or more TikTok links** plus **one content brief**, and
 gets back, per video: a score, timestamped requirement verdicts, an HTML
@@ -377,7 +378,7 @@ fd.append('source_urls', JSON.stringify(urls));
 
 await fetch(`${process.env.AUDIT_API_URL}/analyze/upload`, {
   method: 'POST',
-  headers: { 'x-api-key': process.env.AUDIT_API_KEY! },   // no Content-Type:
+  headers: { 'x-api-key': process.env.AUDIT_API_KEY!, 'ngrok-skip-browser-warning': '1' },   // no Content-Type:
   body: fd,                                              // fetch sets the
 });                                                      // multipart boundary
 ```
@@ -643,7 +644,7 @@ export async function GET(_req: NextRequest,
   const { jobId, file } = await params;
   const r = await fetch(
     `${process.env.AUDIT_API_URL}/jobs/${jobId}/report/${file}`,
-    { headers: { 'x-api-key': process.env.AUDIT_API_KEY! },
+    { headers: { 'x-api-key': process.env.AUDIT_API_KEY!, 'ngrok-skip-browser-warning': '1' },
       cache: 'no-store' });
   return new NextResponse(r.body, {
     status: r.status,
@@ -698,7 +699,8 @@ export async function POST(req: NextRequest) {
   const res = await fetch(`${process.env.AUDIT_API_URL}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json',
-               'x-api-key': process.env.AUDIT_API_KEY! },
+               'x-api-key': process.env.AUDIT_API_KEY!,
+               'ngrok-skip-browser-warning': '1' },
     body: JSON.stringify({
       video_urls: urls,
       brief_url: body.brief_url,
@@ -726,7 +728,7 @@ export async function GET(_req: NextRequest,
     return NextResponse.json({ error: 'bad job id' }, { status: 400 });
   }
   const res = await fetch(`${process.env.AUDIT_API_URL}/jobs/${jobId}`, {
-    headers: { 'x-api-key': process.env.AUDIT_API_KEY! },
+    headers: { 'x-api-key': process.env.AUDIT_API_KEY!, 'ngrok-skip-browser-warning': '1' },
     cache: 'no-store',
     signal: AbortSignal.timeout(20_000),
   });
