@@ -4303,6 +4303,12 @@ key goes to the partner by direct message, never in the repo.
 - Stop `cloudflared` once Vercel uses the ngrok URL.
 - Open the PR.
 - The user pasted the ngrok authtoken in chat; rotate it if that log is shared.
+- **2026-09-28:** the PC rebooted on 09-26 04:38. Docker came back by itself
+  (restart: unless-stopped) but ngrok and the :8001 backend did not, so the
+  public URL was down ~2.6 days until `tools\start_local.ps1` was run. It
+  restored everything; verified via ngrok (/ready, 401/200, angles, 403 on
+  reports). The old cloudflared tunnel died with the reboot — no longer needed.
+  Fix to consider: run start_local.ps1 at logon (Task Scheduler).
 
 ---
 
