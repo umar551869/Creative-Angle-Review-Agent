@@ -4312,6 +4312,14 @@ key goes to the partner by direct message, never in the repo.
   `Creative angle testing` screen (vendored `CreativeAngles.jsx`) whose data
   shape matches our `angles` output. Open decision: where the screen lives.
   The frontend doc's Next.js examples do not apply to that app.
+- **2026-10-05, the WurxMediaHub angle-testing screen** (`/admin/collabs/reporting`,
+  read from `origin/dev`; the live page needs a staff login): staff pick a
+  brand + month, create angles by hand, file that month's TikTok links from a
+  pool into them, type ad spend per video; cards show videos / views / GMV /
+  ad spend / ROAS and mark the Leading angle. Filing is manual today -- that is
+  what our API automates. Gaps to solve: no brief link on that screen; a
+  brand-month can hold 60+ videos vs ~5 min per video here and the live
+  container's 5-video cap per job (`AUDITOR_MAX_VIDEOS`).
 - **2026-09-28:** the PC rebooted on 09-26 04:38. Docker came back by itself
   (restart: unless-stopped) but ngrok and the :8001 backend did not, so the
   public URL was down ~2.6 days until `tools\start_local.ps1` was run. It
