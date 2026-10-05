@@ -11,7 +11,10 @@ not recalled. Where a fact can go stale, the command to re-check it is given.*
 > **This file is updated on every change, finding, or version bump** — not at the
 > end of a session. A stale handoff costs a whole session of rediscovery.
 >
-> **PAUSED 2026-10-06 mid-work on the WurxMediaHub integration. RESUME AT §11ah**`n> (state of both repositories, what is blocked, what is next).`n>`n> **LATEST (2026-09-25): the FastAPI backend is live on this PC** — Docker on
+> **PAUSED 2026-10-06 mid-work on the WurxMediaHub integration. RESUME AT §11ah**
+> (state of both repositories, what is blocked, what is next).
+>
+> **LATEST (2026-09-25): the FastAPI backend is live on this PC** — Docker on
 > :8000 behind `https://atlantic-canine-hurling.ngrok-free.dev`, returning only
 > creative angle → video links to the partner's Vercel frontend. Start at
 > **§11ag**; §9 below is the notebook's state as of 2026-09-21.
