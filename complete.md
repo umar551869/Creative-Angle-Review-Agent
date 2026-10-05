@@ -11,7 +11,7 @@ not recalled. Where a fact can go stale, the command to re-check it is given.*
 > **This file is updated on every change, finding, or version bump** — not at the
 > end of a session. A stale handoff costs a whole session of rediscovery.
 >
-> **LATEST (2026-09-25): the FastAPI backend is live on this PC** — Docker on
+> **PAUSED 2026-10-06 mid-work on the WurxMediaHub integration. RESUME AT §11ah**`n> (state of both repositories, what is blocked, what is next).`n>`n> **LATEST (2026-09-25): the FastAPI backend is live on this PC** — Docker on
 > :8000 behind `https://atlantic-canine-hurling.ngrok-free.dev`, returning only
 > creative angle → video links to the partner's Vercel frontend. Start at
 > **§11ag**; §9 below is the notebook's state as of 2026-09-21.
@@ -4239,7 +4239,7 @@ reports stay on this machine.
 
 - `GET /jobs/{id}` now carries **`angles`** — `{"<angle>": ["<link>", …]}`,
   every angle the brief names in brief order (empty ones included), plus
-  `"None of the brief's angles"`. Also `angle_groups` (same, as an array) and
+  `"Matched None"`. Also `angle_groups` (same, as an array) and
   **`unplaced`** (`[{video, reason}]`). Every submitted link appears exactly
   once: under an angle or in `unplaced`.
 - A request that came **through the tunnel** (`X-Forwarded-For` /
@@ -4257,7 +4257,7 @@ reports stay on this machine.
 
 **Verified end to end through the public URL:** 3 @briceyscarbear videos + 1
 dead link against the Biostime Google-Doc brief → Melatonin / Bedtime Reset /
-"None of the brief's angles", dead link in `unplaced`; reports 403 via ngrok,
+"Matched None", dead link in `unplaced`; reports 403 via ngrok,
 200 on the host; no key → 401. Same grouping as the local run.
 
 ### Real timings (Docker, CPU only)
@@ -4339,6 +4339,179 @@ key goes to the partner by direct message, never in the repo.
   restored everything; verified via ngrok (/ready, 401/200, angles, 403 on
   reports). The old cloudflared tunnel died with the reboot — no longer needed.
   Fix to consider: run start_local.ps1 at logon (Task Scheduler).
+
+---
+
+## 11ah. RESUME HERE: WurxMediaHub integration, paused 2026-10-06
+
+**Paused by the user mid-work on 2026-10-06 ("I will continue from here
+tomorrow"). Start by reading this section.**
+
+### What the user wants
+
+In WurxMediaHub (`C:\Users\Umar Ilyas\WurxMediaHub\RashidNazeer`, Vite + React +
+Supabase), on Paid Collabs -> Reporting -> Creative angle testing: a
+**"Categorise new videos" button per brand, and an automatic run too**, with a
+**progress bar and estimated time**. For a brand it sends the new video links and
+that brand's brief to THIS backend in **batches of 5**; each returned link is
+filed under its creative angle for the right **brand and month** (angle created
+if missing). Videos fitting no angle go under **"Matched None"**. A brand with
+**two focus products has two briefs** (two tabs of one Google Doc) and each video
+goes under the one it follows. This backend must **delete downloaded videos**
+after processing. `AUDITOR_ALWAYS_RECOMPILE_BRIEF` stays on.
+
+### State of THIS repo (creative project)
+
+Committed locally as `5eaa5b2` on `backend/upload-endpoint-and-local-hosting`
+(**check whether it was pushed; push if not**). 236 tests pass. Contains:
+
+- `briefs: [{url, label, angles}]` on `POST /analyze` (multi-brief);
+  `pipeline.pick_followed_brief`; a video is placed only if judged against
+  EVERY brief, else status `BRIEF_AUDIT_INCOMPLETE` and it lands in `unplaced`.
+- `?tab=t.xxxx` honoured (`ingest.fetch_google_doc_tab`); an unknown tab is
+  refused (Google silently returns the first tab -- measured). Briefs fetched
+  fresh each job, one retry.
+- Angle names: caller's `angles` > `ingest.document_angles` (numbered Creative
+  Concepts; starts at that heading, stops at a section heading or when
+  numbering restarts) > the notebook's reader. `angles_from` on the job;
+  a warning when it fell to the notebook. `POST /briefs/angles` previews with
+  no model call. Names are folded into `compiled['cache_key']`.
+- `NO_ANGLE = 'Matched None'`; `placements: [{video, angle, brief,
+  needs_review, note}]`; brief is null for Matched None.
+- `_video_id` anchors on `/video/<id>`; same video sent as two links is
+  reported as a duplicate, not a failure.
+- `AUDITOR_DELETE_VIDEOS_AFTER_JOB` (default on) -> `jobs._drop_videos`.
+
+**NOT DONE in this repo:**
+
+1. **Not deployed.** The Docker container on :8000 (the public ngrok URL) still
+   runs the OLD code. After verifying: `docker compose build` (about 18 s) then
+   `docker compose up -d` in `Backend`, then re-test through ngrok. The local
+   test backend on :8001 runs the new code.
+2. **Last live test unread.** Job `ff5a11e74dec4f15` on :8001 (two briefs, three
+   links of which one is a duplicate spelling) was submitted just before the
+   pause. Read `GET http://127.0.0.1:8001/jobs/ff5a11e74dec4f15` and confirm:
+   5 named angles, duplicate link in `unplaced` as "the same video as...",
+   Matched None with `brief: null`, inbox deleted.
+3. **`Backend/docs/06_frontend_integration.md` needs the review fixes written
+   in:** `angles_from` entries are `"<label>: given"` for multi-brief jobs;
+   `needs_review` / `note` on placements; `BRIEF_AUDIT_INCOMPLETE`; the
+   duplicate-link reason; the unknown-tab refusal; `angles` is a dict of empty
+   lists while running (not "empty"); `placements`/`completed_videos` are only
+   filled at the end; `AUDITOR_DELETE_VIDEOS_AFTER_JOB`. Remove the claim that
+   every link comes back "character for character" without the caveats.
+4. Weak tests the reviewer named, still to strengthen: `_drop_videos` is only
+   tested in isolation (not that `_run` calls it after `persist`, nor that
+   ephemeral / flag-off skip it); no test of `JobStore._pipeline` with
+   `briefs`; no test of `_restore` on a pre-change `job.json`.
+
+### State of WurxMediaHub
+
+Branch `feature/creative-angle-auto-categorise` (cut from the local `dev` ref,
+`153f374`), two local commits: `3633d08` and `3daf9be`. Authored as
+`RashidNazeer <wurxmedia@gmail.com>` on the user's instruction.
+
+- `supabase/migrations/20261006090000_collab_brand_briefs.sql`: table
+  `public.collab_brand_briefs` + 11 briefs for 10 brands.
+- `docs/CREATIVE_ANGLE_AUTOMATION.md`: the plan and the change record.
+- `docs/FEATURE_MAP.md`: an entry.
+- PR text, a patch and a bundle are in `C:\Users\Umar Ilyas\WurxMediaHub\`
+  (**regenerate the patch/bundle: they predate `3daf9be`**).
+
+**BLOCKED:**
+
+- **Cannot push or open the PR.** GitHub answers "Repository not found": the
+  login on this PC (`umar551869`) has no access to the private
+  `RashidNazeer/WurxMediaHub`. The user must get `umar551869` added as a
+  collaborator, or sign this PC in as RashidNazeer.
+- **No dev credentials.** The user pasted `.env` variable NAMES with empty
+  values. Needed: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and to
+  apply migrations / deploy functions a Supabase access token + dev DB
+  password. Nothing has been applied to any database; `pnpm build` has not
+  been run (no `node_modules`).
+
+**Waiting on the user:**
+
+- Is the brand written **"Biostime Shop US"** or **"Biostime"** in Paid
+  Collabs? (Everywhere else in that codebase it is "Biostime".) Also confirm
+  Honeysticks and Kenashii spellings.
+- 8 brands have no brief: Apothecary, Aqua Sonic, Aurelia, Yesday, Inno Supps,
+  Irwin Naturals, Pure Daily Care, and Klassy Network (the sheet holds the
+  document's title, not its link).
+- Dr. Harvey's has two near-identical concepts ("It's Not Just Bad Breath..."
+  and its "Variation #2"): one category or two?
+- What did "create a branch at ...\.env.example" mean?
+
+### Review findings NOT yet written into the WurxMediaHub plan doc
+
+Three Sonnet reviewers checked the work on 2026-10-06. Their backend and
+migration findings are fixed. The **integration review's findings must be
+written into `docs/CREATIVE_ANGLE_AUTOMATION.md` and followed when building**:
+
+1. **Worker = submit/poll state machine**, not one long call. An Edge Function
+   tick is ~100 s; a batch of 5 is ~25-30 min. Persist `provider_job_id`; cron
+   every minute; each tick does one GET. Model on `euka-ads-sync`
+   (`for update skip locked`, a short lease).
+2. **`POST /analyze` is not idempotent.** Write the batch row as `submitting`
+   first, send `label=<batch uuid>`, and before any retry look for that label in
+   `GET /jobs?limit=50`. Never treat a bare 404 as "job lost": an offline ngrok
+   returns an HTML page; the backend's real 404 is JSON `{"detail":"no job ..."}`.
+3. **Identify videos by TikTok video id** (`/video/(\d+)`), not URL string.
+   `video_codes[].video` is unnormalised free text from three writers. Dedupe
+   by id before batching; send canonical URLs; map results back by id; file the
+   exact string that is in `video_codes`. "Already filed" = its id appears in
+   any angle of any `Brand::*` row of that brand.
+4. **Brand key = the exact trimmed `wurxbase.creators.brand`**, case sensitive.
+   Look the brief up case-insensitively, but build `Brand::YYYY-MM` from the
+   creators' spelling. Fail loudly on brands with no brief match.
+5. **Month** = `video.date.slice(0,7)`, else `hiring_date.slice(0,7)`; neither
+   -> skip and report. Mirror the screen's active-brands scope.
+6. **Filing = replicate `saveAngles`** (`src/vendor/wurxbase/angleStore.js:89-174`)
+   with the service role: conditional `update ... where revision = r` setting
+   `revision = r+1`, `updated_at`, a readable `user_display`; on 0 rows re-read
+   and retry (bounded); insert with `revision: 1` if no row, on 23505 re-read;
+   never delete; never write an empty list; preserve every existing key
+   (`spend`, `gmvOverride`, `viewsOverride`, `adSpent`). If the server does not
+   bump `revision`, a stale browser tab silently overwrites the filing.
+7. **New angle object**: `{id: 'a'+base36 time+4 random, title, videos, spend:{},
+   gmvOverride:{}, viewsOverride:{}}` plus a marker key (e.g. `auto:{name}`) so a
+   staff rename does not create a duplicate. Match by marker, then normalised
+   title. A URL must never appear twice in an angle (React key).
+8. **Open screens do not refresh on their own**: nothing subscribes to angle
+   changes. The progress component must call `fetchAngles()` after each batch.
+9. **Permission**: gate on `can(currentUser,'canEditAngles')`. A plain `ops`
+   account does NOT have it by default. Server re-check: profile role + the
+   `wurxbase.app_users` capability. Derive the video list server-side; never
+   accept URLs from the browser.
+10. **Matched None is provisional** when `needs_review` is true or the job
+    warns about missing visual evidence: re-run once before filing.
+11. **Re-vendoring risk**: `scripts/wurxbase-patches.mjs` only patches
+    `WurxUI.jsx`, so a hook line in `CreativeAngles.jsx` would be lost, and
+    `angleStore.js` (which carries the revision guard) is copied verbatim with
+    no fence. Generalise the patch script first.
+12. **Wiring that fails silently if forgotten**: a `[functions.<name>]
+    verify_jwt = false` block for the cron-called function; `grant all ... to
+    service_role` on new tables; regenerate `src/types/database.ts`;
+    `verify:role-gates` needs every staff role string in the function.
+13. **Progress/ETA**: mid-run only `status`, `phase`, `requested_videos`,
+    `downloaded_videos`, `elapsed_s` are meaningful. Phase weights from a real
+    run: brief 5%, ingest 4%, phase1 5%, phase2 58%, phase3 16%, phase5-7 11%.
+    Rolling average of finished batches; fall back to 5.5 min/video. Each job
+    also pays ~1-3 min of brief compile (always-recompile is on), per brief.
+14. Poison batch: if a batch fails twice, split into single-video batches.
+
+### Next steps, in order
+
+1. Read job `ff5a11e74dec4f15`; finish items 1-4 under "NOT DONE in this repo";
+   push; rebuild and restart Docker; verify through the ngrok URL.
+2. Write the 14 findings above into WurxMediaHub's
+   `docs/CREATIVE_ANGLE_AUTOMATION.md`, commit, regenerate the patch/bundle.
+3. When the user has GitHub access and dev credentials: push, open the PR
+   against `dev`, apply the migration to dev, verify brand names against
+   `select distinct btrim(brand) from wurxbase.creators`.
+4. Then build, one step per approval (that repo's rule): queue tables, Edge
+   Function + worker, filing, button + progress bar, automatic run, check
+   script.
 
 ---
 
