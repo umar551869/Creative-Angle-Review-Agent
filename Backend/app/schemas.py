@@ -27,17 +27,70 @@ Phase = Literal['queued', 'ingest', 'brief', 'phase1', 'phase2', 'phase3',
 # ---------------------------------------------------------------------------
 # Request
 # ---------------------------------------------------------------------------
+class BriefRef(BaseModel):
+    url: str = Field(
+        ..., description='A Google Docs URL. `?tab=t.xxxx` selects ONE tab of '
+                         'the document; without it every tab is read as one '
+                         'brief.')
+    label: Optional[str] = Field(
+        None, max_length=80,
+        description='What this brief is for, e.g. the product name. Returned '
+                    'on each placement so the caller knows which brief a '
+                    'video followed.')
+    angles: Optional[list[str]] = Field(
+        None, max_length=12,
+        description='The creative angles this brief names, exactly as the '
+                    'caller wants them returned. When given, videos are '
+                    'placed under THESE names and nothing is read back out of '
+                    'the document\'s headings -- which is the only way two '
+                    'runs are guaranteed to use the same category names.')
+
+    @field_validator('angles')
+    @classmethod
+    def _angles_tidy(cls, v):
+        return _tidy_angles(v)
+
+
+def _tidy_angles(v: Optional[list[str]]) -> Optional[list[str]]:
+    """Trimmed, de-duplicated (case-insensitively, first spelling kept), and
+    bounded: a category name is a title, not a paragraph."""
+    if v is None:
+        return None
+    out: list[str] = []
+    for a in v:
+        s = ' '.join(str(a or '').split())
+        if not s:
+            continue
+        if len(s) > 120:
+            raise ValueError(f'angle name over 120 characters: {s[:60]!r}...')
+        if s.lower() not in (x.lower() for x in out):
+            out.append(s)
+    return out or None
+
+
 class AnalyzeRequest(BaseModel):
     video_urls: list[str] = Field(
         ..., min_length=1,
         description='One or more video URLs (TikTok, or anything yt-dlp '
                     'supports). Each is downloaded into this job\'s inbox.')
+    briefs: Optional[list[BriefRef]] = Field(
+        None, min_length=1, max_length=4,
+        description='SEVERAL briefs for one brand -- a brand with two focus '
+                    'products has one brief per product, usually a tab each '
+                    'of the same document. Every video is audited against '
+                    'each and placed under the brief it actually follows. '
+                    'Use instead of brief_url / brief_text.')
     brief_url: Optional[str] = Field(
         None,
         description='A Google Docs URL, shared "anyone with the link can '
                     'view". Mutually exclusive with brief_text.')
     brief_text: Optional[str] = Field(
         None, description='The brief as raw text, instead of a URL.')
+    angles: Optional[list[str]] = Field(
+        None, max_length=12,
+        description='With brief_url or brief_text: the creative angles that '
+                    'brief names, exactly as they should be returned. See '
+                    '`briefs[].angles`.')
     force_reaudit: bool = Field(
         False,
         description='Re-run stages that already have a cached artifact. '
@@ -63,6 +116,11 @@ class AnalyzeRequest(BaseModel):
                     'are no longer comparable with earlier runs.')
     label: Optional[str] = Field(
         None, max_length=120, description='Free-text name for this run.')
+
+    @field_validator('angles')
+    @classmethod
+    def _angles_tidy(cls, v):
+        return _tidy_angles(v)
 
     @field_validator('video_urls')
     @classmethod
@@ -229,6 +287,9 @@ class VideoResultOut(BaseModel):
                     '"phase3" is the vision pass, "phase5-7" the audit and '
                     'score.')
 
+    brief_label: Optional[str] = Field(
+        None, description='Which brief this video followed, when the job was '
+                          'given several (one per focus product).')
     score: ScoreOut = ScoreOut()
     standing: Optional[str] = None
     creative_angle: CreativeAngleOut = CreativeAngleOut()
@@ -308,6 +369,25 @@ class JobOut(BaseModel):
         default={}, description='Short links (vm.tiktok.com, /t/) and the '
                                 'full video URL each resolved to.')
 
+    brief_labels: list[str] = Field(
+        default=[], description='Labels of the briefs this job judged '
+                                'against, when it was given several.')
+    named_angles: list[str] = Field(
+        default=[], description='Every creative angle named by the brief(s), '
+                                'in order.')
+    angles_from: list[str] = Field(
+        default=[],
+        description='Where each brief\'s angle names came from: "given" (sent '
+                    'with the request), "document" (the brief\'s own numbered '
+                    'creative concepts) or "notebook" (inferred, because the '
+                    'brief has no numbered list -- check them).')
+    placements: list[PlacementOut] = Field(
+        default=[],
+        description='One entry per audited video: its link, the angle it '
+                    'falls under ("Matched None" when it fits none) and, for '
+                    'a job with several briefs, the label of the brief it '
+                    'followed. The same answer as `angles`, flat.')
+
     angles: dict[str, list[str]] = Field(
         default={},
         description='THE ANSWER, in its simplest form: creative angle -> the '
@@ -338,6 +418,20 @@ class AngleGroupOut(BaseModel):
 class UnplacedVideoOut(BaseModel):
     video: Optional[str] = None
     reason: Optional[str] = None
+
+
+class PlacementOut(BaseModel):
+    video: Optional[str] = None
+    angle: str
+    brief: Optional[str] = Field(
+        None, description='The brief this video followed (a job with several '
+                          'briefs). Empty for "Matched None": it followed none.')
+    needs_review: bool = Field(
+        False,
+        description='True on a "Matched None" that may not be a real one: the '
+                    'video could not be fully judged (see `note`). Re-run it '
+                    'before treating it as fitting no angle.')
+    note: Optional[str] = None
 
 
 JobOut.model_rebuild()

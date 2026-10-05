@@ -70,6 +70,9 @@ class Job:
         # "which of MY links is under which angle" for every link sent.
         self.failed_urls: list[str] = []
         self.resolved_urls: dict[str, str] = {}
+        self.brief_labels: list[str] = []
+        self.named_angles: list[str] = []
+        self.angles_from: list[str] = []
         self.timings: list[dict] = []
         self.warnings: list[str] = []
         self.error: Optional[str] = None
@@ -121,6 +124,9 @@ class Job:
                                or self.payload.get('source_urls') or []),
             'failed_urls': self.failed_urls,
             'resolved_urls': self.resolved_urls,
+            'brief_labels': self.brief_labels,
+            'named_angles': self.named_angles,
+            'angles_from': self.angles_from,
             'timings': self.timings, 'warnings': self.warnings,
             'error': self.error,
         }
@@ -145,7 +151,9 @@ class Job:
 _RESTORABLE = ('status', 'phase', 'label', 'created_at', 'started_at',
                'finished_at', 'requested_videos', 'downloaded_videos',
                'completed_videos', 'brief', 'results', 'angle_distribution',
-               'failed_urls', 'resolved_urls', 'timings', 'warnings', 'error')
+               'failed_urls', 'resolved_urls', 'brief_labels', 'named_angles',
+               'angles_from',
+               'timings', 'warnings', 'error')
 
 
 def _restore(job_id: str) -> Optional[Job]:
@@ -313,7 +321,11 @@ class JobStore:
                 job.phase = 'done'
                 if s.ephemeral:
                     _drop_bulk(job.id)
+                # The result is on disk BEFORE the videos go: a job whose
+                # record failed to write must not also have lost its inputs.
                 job.persist()
+                if s.delete_videos_after_job and not s.ephemeral:
+                    _drop_videos(job.id)
                 log.info('[%s] %s in %.0fs (%d/%d videos)', job.id,
                          job.status.upper(), (job.elapsed_s or 0),
                          job.completed_videos, job.requested_videos)
@@ -343,8 +355,34 @@ class JobStore:
         job.set_phase('brief', 'retrieving')
         t = time.time()
         precompiled = p.get('compiled_brief')
+        refs = p.get('briefs') or []
+        # (label, compiled) for every brief this job judges against. One entry
+        # for an ordinary job; one per product for a brand that has several.
+        briefs: list[tuple[str, dict]] = []
+        # Where each brief's angle names came from: 'given' by the caller,
+        # read from the 'document', or left to the 'notebook' reader.
+        angle_sources: list[str] = []
+        raw_text = ''
 
-        if precompiled and not p.get('brief_url') and not p.get('brief_text'):
+        if refs:
+            for n, ref in enumerate(refs, 1):
+                label = str(ref.get('label') or '').strip() or f'Brief {n}'
+                loaded = ingest.load_brief(brief_url=ref.get('url'))
+                log.info('[%s] brief %d/%d %r: %s (%d chars, hash %s)',
+                         job.id, n, len(refs), label, loaded['origin'],
+                         loaded['chars'], loaded['hash'][:12])
+                c = ingest.compile_brief(
+                    loaded['text'], runs=s.brief_compile_runs,
+                    keep_threshold=s.brief_keep_threshold,
+                    recompile=bool(p.get('recompile'))
+                    or s.always_recompile_brief)
+                c.setdefault('origin', loaded['origin'])
+                src = ingest.settle_angles(c, loaded['text'],
+                                           ref.get('angles'))
+                angle_sources.append(f'{label}: {src}')
+                briefs.append((label, c))
+            compiled, origin = briefs[0][1], str(briefs[0][1].get('origin'))
+        elif precompiled and not p.get('brief_url') and not p.get('brief_text'):
             # The caller holds the contract and named no document. Nothing to
             # fetch, nothing to compile, three model calls saved.
             compiled = ingest.use_precompiled(precompiled)
@@ -354,6 +392,7 @@ class JobStore:
             loaded = ingest.load_brief(brief_url=p.get('brief_url'),
                                        brief_text=p.get('brief_text'))
             origin = loaded['origin']
+            raw_text = loaded['text']
             log.info('[%s] brief: %s (%d chars, hash %s)', job.id,
                      origin, loaded['chars'], loaded['hash'][:12])
             if precompiled:
@@ -368,7 +407,30 @@ class JobStore:
                     recompile=bool(p.get('recompile'))
                     or s.always_recompile_brief)
         compiled.setdefault('origin', origin)
+        if not briefs:
+            angle_sources.append(ingest.settle_angles(
+                compiled, raw_text or str(compiled.get('brief_text') or ''),
+                p.get('angles')))
+            briefs = [('', compiled)]
         job.brief = ingest.brief_summary(compiled, origin)
+        job.brief_labels = [lb for lb, _ in briefs if lb]
+        # Every angle any of the briefs names, in order. Kept on the job
+        # because once each video has been placed under ONE brief, an angle
+        # nobody used belongs to no result row -- and "no creator took this
+        # concept" still has to appear in the answer.
+        named: list[str] = []
+        for _, c in briefs:
+            for a in ingest.brief_summary(
+                    c, str(c.get('origin') or ''))['named_angles']:
+                if a not in named:
+                    named.append(a)
+        job.named_angles = named
+        job.angles_from = angle_sources
+        if any(a.endswith('notebook') for a in angle_sources):
+            job.warn('this brief has no numbered creative concepts, so its '
+                     'angle names were inferred rather than read; check '
+                     '`named_angles` before trusting the categories, or '
+                     'send `angles` with the request')
         # HAND THE CONTRACT BACK when there is no durable place to keep it.
         # Without this the caller has no way to get identical scoring on the
         # next job, and the compiler is non-deterministic enough that the
@@ -437,10 +499,27 @@ class JobStore:
         # ---- 4. Phases 5-7, per video ------------------------------------
         self._check_deadline(job)
         t = time.time()
-        rows = pipeline.audit_all(compiled, max_videos=s.max_videos_per_job,
-                                  force=force, progress=job.set_phase,
-                                  deadline=job.deadline)
-        job.time_phase('phase5-7', time.time() - t)
+        per_brief: list[list[dict]] = []
+        for label, c in briefs:
+            rows_i = pipeline.audit_all(c, max_videos=s.max_videos_per_job,
+                                        force=force, progress=job.set_phase,
+                                        deadline=job.deadline)
+            for r in rows_i:
+                r['brief_label'] = label or None
+            per_brief.append(rows_i)
+        # Several briefs: each video keeps the audit of the brief it actually
+        # followed. The evidence (phases 1-3) was extracted once and is shared;
+        # only the judging ran per brief.
+        rows = (pipeline.pick_followed_brief(per_brief)
+                if len(per_brief) > 1 else per_brief[0])
+        skipped = [r for r in rows
+                   if r.get('status') == 'BRIEF_AUDIT_INCOMPLETE']
+        if skipped:
+            job.warn(f'{len(skipped)} video(s) could not be judged against '
+                     f'every brief and were NOT placed; send them again: '
+                     f'{[r.get("source") for r in skipped]}')
+        job.time_phase('phase5-7', time.time() - t,
+                       f'{len(briefs)} briefs' if len(briefs) > 1 else '')
 
         # For an upload job `source_urls` carries the links the files came
         # from, purely so a result row can still name its origin. Nothing
@@ -484,6 +563,40 @@ def _drop_bulk(job_id: str) -> None:
     if freed:
         log.info('[%s] ephemeral: freed %.1f MB (reports kept)',
                  job_id, freed / 1e6)
+
+
+def _drop_videos(job_id: str) -> None:
+    """Delete this job's downloaded (or uploaded) videos, and only those.
+
+    Unlike `_drop_bulk`, the artifact store is left alone: it is shared,
+    content-addressed, and the reason a second audit of the same video takes
+    seconds instead of minutes. Runs whether the job succeeded or failed -- a
+    failed job's clips are no more useful than a finished one's, and the
+    artifacts already written still let a re-run resume.
+    """
+    d = get_settings().jobs / job_id / 'inbox'
+    if not d.is_dir():
+        return
+    try:
+        files = [f for f in d.rglob('*') if f.is_file()]
+        freed = sum(f.stat().st_size for f in files)
+        shutil.rmtree(d, ignore_errors=True)
+    except OSError as exc:
+        log.warning('[%s] could not delete the downloaded videos: %s',
+                    job_id, exc)
+        return
+    # rmtree(ignore_errors) says nothing when a file is still held open, which
+    # on Windows it can be. Report what is true, not what was attempted; the
+    # retention sweep takes whatever is left.
+    left = [f for f in d.rglob('*') if f.is_file()] if d.exists() else []
+    if left:
+        log.warning('[%s] %d of %d downloaded video file(s) could not be '
+                    'deleted yet (still in use); the retention sweep will '
+                    'remove them', job_id, len(left), len(files))
+        return
+    if files:
+        log.info('[%s] deleted %d downloaded video file(s), freed %.1f MB',
+                 job_id, len(files), freed / 1e6)
 
 
 _LAST_SWEEP = 0.0

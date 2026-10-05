@@ -288,7 +288,21 @@ def analyze(req: AnalyzeRequest) -> JobAccepted:
     TikTok refuses this server's IP, which is common from a datacentre -- post
     the files to `/analyze/upload` instead.
     """
-    _guard_new_job(n_videos=len(req.video_urls), brief_url=req.brief_url,
+    if req.briefs:
+        if req.brief_url or req.brief_text or req.compiled_brief \
+                or req.angles:
+            raise HTTPException(
+                422, '`briefs` replaces brief_url, brief_text, '
+                     'compiled_brief and the top-level angles -- with '
+                     '`briefs`, each brief carries its own `angles`.')
+        bad = [b.url[:100] for b in req.briefs
+               if 'docs.google.com/document/d/' not in b.url]
+        if bad:
+            raise HTTPException(
+                422, f'not a Google Docs URL: {bad}. Each brief must be a '
+                     f'Google Doc shared "anyone with the link can view".')
+    _guard_new_job(n_videos=len(req.video_urls),
+                   brief_url=req.briefs[0].url if req.briefs else req.brief_url,
                    brief_text=req.brief_text,
                    compiled_brief=req.compiled_brief)
     store = get_store()
@@ -490,9 +504,11 @@ def get_job(request: Request,
     groups, unplaced = pipeline.angle_groups(
         job.results,
         submitted=d.get('video_urls') if done else None,
-        failed=job.failed_urls, job_error=job.error)
+        failed=job.failed_urls, job_error=job.error,
+        named_angles=job.named_angles, resolved=job.resolved_urls)
     d.update(angles={g['angle']: g['videos'] for g in groups},
-             angle_groups=groups, unplaced=unplaced)
+             angle_groups=groups, unplaced=unplaced,
+             placements=pipeline.placements(job.results))
     if _angles_only(request):
         # The answer is which video is which angle. Scores, verdicts, the
         # brief as compiled and the reports stay on this machine.
@@ -620,7 +636,33 @@ def compile_brief_endpoint(req: BriefCompileRequest) -> BriefOut:
             recompile=req.recompile)
     except ingest.IngestError as exc:
         raise HTTPException(422, str(exc)) from exc
+    # The same decision a job makes, so the preview and the audit agree.
+    ingest.settle_angles(compiled, loaded['text'])
     return BriefOut(**ingest.brief_summary(compiled, loaded['origin']))
+
+
+@app.post('/briefs/angles', tags=['brief'],
+          dependencies=[Depends(require_key)])
+def brief_angles_endpoint(req: BriefCompileRequest) -> dict:
+    """The creative concepts a brief names, read straight from the document.
+
+    Instant and free: no model is called, nothing is compiled or stored. This
+    is how a caller finds out what categories a brief will produce BEFORE
+    sending videos -- and what to store and send back as `angles`. A link with
+    `?tab=t.xxxx` reads that tab only. An empty list means the brief has no
+    numbered concept list, and its angles would have to be inferred.
+    """
+    from app.services import ingest
+
+    if not req.brief_url and not req.brief_text:
+        raise HTTPException(422, 'give either brief_url or brief_text.')
+    try:
+        loaded = ingest.load_brief(brief_url=req.brief_url,
+                                   brief_text=req.brief_text)
+    except ingest.IngestError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {'origin': loaded['origin'], 'chars': loaded['chars'],
+            'angles': ingest.document_angles(loaded['text'])}
 
 
 # ---------------------------------------------------------------------------

@@ -35,8 +35,20 @@ class IngestError(RuntimeError):
 # Videos
 # ---------------------------------------------------------------------------
 def _video_id(url: str) -> str:
-    """The trailing digits of a TikTok URL are the id downloads are named by."""
-    m = re.search(r'(\d{6,})(?:\?|$|/)', url or '')
+    """The id a TikTok link's download is named by.
+
+    `/video/<digits>` FIRST. The original looked only for a run of six or more
+    digits ending at `?`, `/` or the end, and so read the HANDLE of
+    `tiktok.com/@jane1234567/video/7671…` as the video id -- the file that then
+    arrived was named for the real id, matched nothing, and a good link was
+    reported as "could not download". The same anchor also survives
+    `…/video/<id>#x` and `…/video/<id>&a=1`, which the old pattern missed.
+    The trailing-digits rule stays as the fallback for other link shapes.
+    """
+    u = url or ''
+    m = re.search(r'/(?:video|photo|v)/(\d{6,})', u)
+    if not m:
+        m = re.search(r'(\d{6,})(?:\?|#|&|$|/)', u)
     return m.group(1) if m else ''
 
 
@@ -240,6 +252,269 @@ def adopt_uploads() -> dict:
 # ---------------------------------------------------------------------------
 # Brief
 # ---------------------------------------------------------------------------
+_DOC_TAB = re.compile(r'[?&#]tab=(t\.[A-Za-z0-9]+)')
+
+
+def doc_tab(url: str) -> str:
+    """The `tab=t.xxxx` a Google Docs link points at, or ''."""
+    m = _DOC_TAB.search(url or '')
+    return m.group(1) if m else ''
+
+
+def fetch_google_doc_tab(url: str) -> dict:
+    """One Google Doc, ONE TAB of it when the link names a tab, as plain text.
+
+    A brand with two focus products keeps both briefs in one document, a tab
+    each. The notebook's loader asks for `export?format=txt` with no tab, and
+    Google answers with every tab concatenated -- so two products' concepts
+    arrive as one brief and a video is judged against angles that were never
+    its brief. Passing `tab=` exports that tab alone.
+
+    FETCHED FRESH, unlike the notebook's loader, which caches a document by id
+    for ever. Briefs get edited between campaigns and a stale copy audits
+    against a brief nobody is using any more; the fetch is one small request.
+    """
+    ns = runtime.load()
+    doc_id = ns['google_doc_id'](url)
+    tab = doc_tab(url)
+    body = _export_doc_text(ns, doc_id, tab)
+    # AN UNKNOWN TAB IS NOT AN ERROR TO GOOGLE. Asked for a tab id that does
+    # not exist, it answers 200 with the FIRST tab -- measured, not assumed --
+    # so a mistyped or deleted tab would audit one product's videos against
+    # the other product's brief with nothing anywhere saying so. The first tab
+    # is `t.0`; any other tab that comes back identical to it was not found.
+    if tab and tab != 't.0' and body == _export_doc_text(ns, doc_id, 't.0'):
+        raise RuntimeError(
+            f'The document {doc_id} has no tab {tab!r}: Google returned its '
+            f'first tab instead. Open the brief, click the tab you mean, and '
+            f'copy the link again.')
+    return {'text': body,
+            'source': f'google_doc:{doc_id}' + (f'#{tab}' if tab else '')}
+
+
+def _export_doc_text(ns: dict, doc_id: str, tab: str = '') -> str:
+    """Plain text of a Google Doc (one tab of it, when given), or raise."""
+    import requests
+    export = f'https://docs.google.com/document/d/{doc_id}/export?format=txt'
+    if tab:
+        export += f'&tab={tab}'
+    where = f'{doc_id}{" tab " + tab if tab else ""}'
+    last: Optional[Exception] = None
+    for attempt in (1, 2):                # one retry: a blip must not cost a job
+        try:
+            r = requests.get(export, timeout=30, allow_redirects=True)
+        except requests.RequestException as exc:
+            last = exc
+            time.sleep(2)
+            continue
+        if r.status_code >= 500 and attempt == 1:
+            time.sleep(2)
+            continue
+        body = r.content.decode('utf-8', errors='replace')
+        if r.status_code != 200:
+            raise RuntimeError(
+                f'Google Docs returned HTTP {r.status_code} for {where}. Open '
+                f'the doc -> Share -> General access -> "Anyone with the '
+                f'link" (Viewer).')
+        # A permission failure is a 200 with an HTML sign-in page, which
+        # WOULD compile into real-looking requirements. The notebook's guard.
+        if ns['_looks_like_html'](body):
+            raise RuntimeError(
+                f'Google returned an HTML page instead of the text of '
+                f'{doc_id}. The doc is not publicly readable: Share -> '
+                f'General access -> "Anyone with the link" -> Viewer.')
+        body = body.replace('\r\n', '\n').replace('\r', '\n').lstrip('﻿')
+        if not body.strip():
+            raise RuntimeError(f'The document {where} exported as empty text.')
+        return body
+    raise RuntimeError(f'could not reach Google Docs for {where}: {last}')
+
+
+_CONCEPT_TITLE = re.compile(r'^[\s*\-•]*\d+\.\s+\S')
+# The headings that end the concept list. WHOLE-LINE for "Hooks", and an
+# apostrophe required in "Do's" / "Don'ts": the first version matched any line
+# that merely BEGAN with these letters, so a detail line "Does the creator show
+# it?" ended the list and the concepts after it were lost.
+_SECTION_STOP = re.compile(
+    r'^(hooks?(\s+concepts?)?|key talking points\b.*|call to actions?\b.*|'
+    r'do[’\']s\b.*|don[’\']ts\b.*|product links?\b.*|'
+    r'best performing videos\b.*|deliverables\b.*|requirements\b.*|'
+    r'posting requirements\b.*|guidelines\b.*|mandatories\b.*|'
+    r'timeline\b.*|compensation\b.*)\s*:?\s*$', re.I)
+
+
+def _is_section_stop(line: str) -> bool:
+    """A HEADING that ends the concepts -- short and not a sentence."""
+    s = re.sub(r'^[\s*\-•]+', '', line or '').strip()
+    return (0 < len(s) <= 90 and s[-1] not in '.?!,;'
+            and bool(_SECTION_STOP.match(s)))
+
+
+def _plain(s: str) -> str:
+    """A concept name reduced to what identifies it: no quotes, bullets,
+    numbering or case, so `1. “Visual hook”(Top…)` and `Visual hook (Top…)`
+    are the same name."""
+    s = re.sub(r'^[\s*\-•]*(\d+\.)?\s*', '', s or '')
+    s = re.sub(r'["“”‘’\']', '', s)
+    return re.sub(r'[^a-z0-9]+', ' ', s.lower()).strip()
+
+
+def _concept_detail(text: str, name: str) -> list[str]:
+    """What the brief says under one concept: the lines between its title and
+    the next concept or section. This is what the angle judge reads to decide
+    whether a video followed it, so a name alone is not enough."""
+    want = _plain(name)
+    lines = [ln.strip() for ln in (text or '').splitlines()]
+    out: list[str] = []
+    for i, ln in enumerate(lines):
+        if not ln or _plain(ln) != want:
+            continue
+        for nxt in lines[i + 1:]:
+            if not nxt:
+                continue
+            if _CONCEPT_TITLE.match(nxt) or _is_section_stop(nxt):
+                break
+            out.append(re.sub(r'^[\s*\-•]+', '', nxt).strip())
+        break
+    return [x for x in out if x][:6]
+
+
+_CONCEPT_NUMBERED = re.compile(r'^[\s*\-•]*(\d+)\.\s+(.+?)\s*:?\s*$')
+_CONCEPTS_HEADING = re.compile(r'^creative concepts?\s*:?$', re.I)
+_PURPOSE_HEADING = re.compile(r'^purpose\s*:?$', re.I)
+
+
+def clean_angle_name(name: str) -> str:
+    """A concept title as a category name: the quote marks around it removed,
+    a parenthetical set off by a space. `“Visual hook”(Top performing angle)`
+    -> `Visual hook (Top performing angle)`."""
+    n = re.sub(r'["“”]', '', name or '')
+    n = re.sub(r'(?<=\S)\(', ' (', n)
+    return re.sub(r'\s+', ' ', n).strip()
+
+
+def document_angles(text: str) -> list[str]:
+    """The brief's creative concepts, read from its own numbered list.
+
+    Every brief this pipeline is given has the same spine: Purpose, then the
+    creative concepts as NUMBERED TITLES (under a "Creative Concepts" heading,
+    usually), then Hooks, Key talking points, Call to action. So the concepts
+    are the numbered titles between the opening and the first of those later
+    headings -- and that is all this reads.
+
+    It is deliberately narrower than the notebook's reader, which also accepts
+    unnumbered and bolded shapes and, on real briefs, got four of eleven wrong
+    (see use_given_angles). Returns [] for a brief not shaped this way, and
+    the caller then falls back to the notebook's reader.
+
+    THREE THINGS KEEP IT FROM READING SOMETHING ELSE AS A CONCEPT:
+      * it starts at the "Creative Concepts" heading when the brief has one,
+        and only falls back to "Purpose" when it does not -- so a numbered
+        list inside the Purpose is not mistaken for the concepts;
+      * it stops at the next section heading (see _is_section_stop);
+      * it stops when the numbering RESTARTS at 1. Concepts are one list,
+        numbered once; a second "1." is a different list, under a heading
+        this does not know by name.
+    """
+    lines = [ln.strip() for ln in (text or '').replace('﻿', '').splitlines()]
+    lines = [ln for ln in lines if ln]
+    start = _CONCEPTS_HEADING if any(_CONCEPTS_HEADING.match(ln) for ln in lines) \
+        else _PURPOSE_HEADING
+    out: list[str] = []
+    on = False
+    for s in lines:
+        if not on:
+            on = bool(start.match(s))
+            continue
+        if _is_section_stop(s):
+            break
+        m = _CONCEPT_NUMBERED.match(s)
+        if not m:
+            continue
+        if int(m.group(1)) == 1 and out:
+            break
+        name = clean_angle_name(m.group(2))
+        # A title, not a numbered sentence of prose.
+        if 2 <= len(name) <= 90 and any(c.isalpha() for c in name) \
+                and name.lower() not in (x.lower() for x in out):
+            out.append(name)
+    return out[:12]
+
+
+def settle_angles(compiled: dict, text: str,
+                  given: Optional[list[str]] = None) -> str:
+    """Decide, once, which angle names this brief is judged against.
+
+    The caller's list if it sent one; else the document's own numbered
+    concepts; else whatever the notebook's reader makes of it. Returns which
+    it was -- 'given', 'document' or 'notebook' -- so a job can SAY where its
+    category names came from instead of leaving it to be assumed.
+    """
+    if given and any(str(a or '').strip() for a in given):
+        use_given_angles(compiled, given, text=text)
+        return 'given'
+    doc = document_angles(text)
+    if doc:
+        use_given_angles(compiled, doc, text=text)
+        return 'document'
+    # A compile handed back by a client may still carry the list an EARLIER job
+    # settled on. Left in place it would be used while this job reports
+    # 'notebook'. Drop it, and the cache-key suffix that went with it.
+    if compiled.pop('given_angles', None) is not None:
+        compiled['cache_key'] = str(
+            compiled.get('cache_key') or '').split('+angles:')[0]
+    return 'notebook'
+
+
+def use_given_angles(compiled: dict, angles: Optional[list[str]],
+                     text: str = '') -> dict:
+    """Judge against the angle names the CALLER gives, not ones read back out
+    of the document.
+
+    The notebook finds a brief's angles by reading its "Creative Concepts"
+    section, and on real briefs that is wrong often enough to matter. Checked
+    against eleven: a concept typed as `* 1. Title` was taken for a bullet and
+    dropped; `Tired Day Fix!` was dropped for ending like a sentence; a brief
+    with no "Creative Concepts" heading yielded no angles at all; and a
+    "Key talking points" heading was reported as an angle. Each of those files
+    a video under the wrong category, or under none.
+
+    The hub already stores the angle list for every brief -- they ARE its
+    categories -- so it sends them, and they are used exactly as sent. That
+    also means a category can never be spelled two ways.
+
+    The reader is wrapped once, in the namespace the pipeline resolves it from,
+    rather than edited: auditor/ is generated from the notebook, and a brief
+    with no given angles still takes the notebook's path untouched.
+    """
+    given = list(dict.fromkeys(
+        str(a).strip() for a in (angles or []) if str(a or '').strip()))
+    if not given:
+        return compiled
+    ns = runtime.load()
+    orig = ns['brief_angle_blocks']
+    if not getattr(orig, '_given_aware', False):
+        def brief_angle_blocks(c: dict, limit: int = 8) -> list:
+            names = (c or {}).get('given_angles')
+            if not names:
+                return orig(c, limit=limit)
+            text = (c or {}).get('brief_text') or ''
+            return [{'name': n, 'detail': _concept_detail(text, n)}
+                    for n in names]
+        brief_angle_blocks._given_aware = True
+        ns['brief_angle_blocks'] = brief_angle_blocks
+    compiled['given_angles'] = given
+    if text and not compiled.get('brief_text'):
+        compiled['brief_text'] = text      # where each concept's detail is read
+    # A different angle list is a different question. The verdict cache is
+    # keyed on the compile's cache_key, so fold the list in or a cached audit
+    # against the OLD list answers for the new one.
+    tag = ns['sha256_text']('\n'.join(given))[:12]
+    base = str(compiled.get('cache_key') or '').split('+angles:')[0]
+    compiled['cache_key'] = f'{base}+angles:{tag}'
+    return compiled
+
+
 def load_brief(*, brief_url: Optional[str] = None,
                brief_text: Optional[str] = None) -> dict:
     """Google Docs URL or raw text -> {text, origin, hash}."""
@@ -254,7 +529,8 @@ def load_brief(*, brief_url: Optional[str] = None,
             f'fetches Google Docs only -- share the doc as "anyone with the '
             f'link can view", or send the brief as brief_text.')
     try:
-        loaded = ns['load_brief_text'](source, verbose=False)
+        loaded = (fetch_google_doc_tab(source) if brief_url
+                  else ns['load_brief_text'](source, verbose=False))
     except Exception as exc:
         raise IngestError('brief', f'{type(exc).__name__}: {exc}') from exc
     text = loaded['text']

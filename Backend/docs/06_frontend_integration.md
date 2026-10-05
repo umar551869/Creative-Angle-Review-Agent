@@ -326,6 +326,7 @@ ngrok-skip-browser-warning: 1
 |---|---|---|---|
 | `POST` | `/analyze/upload` | key | ✅ same as `/analyze`, but you send video **files** (multipart) |
 | `GET` | `/jobs` | key | ✅ recent jobs `[{job_id, status, phase, label, created_at, videos}]` |
+| `POST` | `/briefs/angles` | key | ✅ the creative concepts a brief names, read from the document; instant, no model call |
 | `POST` | `/briefs/compile` | key | ✅ compile a brief alone, to preview its requirements and named angles |
 | `GET` | `/health` | open | ✅ liveness `{status, uptime_s}` |
 | `GET` | `/metrics` | open | ✅ Prometheus text |
@@ -519,7 +520,7 @@ is `queued`/`running` and `phase` says where it is. When `status` is
     "Why I Stopped Giving My Kids Melatonin": [],
     "Back to School Essentials":              ["https://www.tiktok.com/@c/video/3"],
     "Back to School Bedtime Reset":           [],
-    "None of the brief's angles":             ["https://www.tiktok.com/@d/video/4"]
+    "Matched None":             ["https://www.tiktok.com/@d/video/4"]
   },
 
   // the same data as an ordered array, if you prefer iterating a list
@@ -530,7 +531,7 @@ is `queued`/`running` and `phase` says where it is. When `status` is
     { "angle": "Back to School Essentials",
       "videos": ["https://www.tiktok.com/@c/video/3"] },
     { "angle": "Back to School Bedtime Reset", "videos": [] },
-    { "angle": "None of the brief's angles",
+    { "angle": "Matched None",
       "videos": ["https://www.tiktok.com/@d/video/4"] }
   ],
   "unplaced": [
@@ -540,10 +541,52 @@ is `queued`/`running` and `phase` says where it is. When `status` is
 }
 ```
 
+- **A brand with two focus products has two briefs** (usually two tabs of one
+  Google Doc). Send them as `briefs` instead of `brief_url`:
+
+  ```json
+  {
+    "video_urls": ["https://www.tiktok.com/@a/video/1"],
+    "briefs": [
+      { "label": "Colon 14 Day Cleanse",
+        "url": "https://docs.google.com/document/d/<id>/edit?tab=t.0" },
+      { "label": "Lung Health",
+        "url": "https://docs.google.com/document/d/<id>/edit?tab=t.iyd0i3cnge8e" }
+    ]
+  }
+  ```
+
+  Every video is judged against each brief and placed under the one it
+  actually follows. `angles` then lists the angles of **all** the briefs, and
+  `placements` says which brief each video followed:
+
+  ```json
+  "placements": [
+    { "video": "https://www.tiktok.com/@a/video/1",
+      "angle": "3 Signs Your Lungs May Need Extra Support", "brief": "Lung Health" }
+  ]
+  ```
+
+  **Send each brief's `angles` too** when you already know them:
+  `{ "label": "Lung Health", "url": "...", "angles": ["3 Signs Your Lungs May Need Extra Support", "..."] }`.
+  Videos are then placed under exactly those names. Without `angles` the
+  backend reads the brief's own numbered "Creative Concepts" list. Either way
+  the response says which it used, per brief, in `angles_from`: `given`,
+  `document`, or `notebook` (inferred because the brief has no numbered list;
+  treat those categories with suspicion). For a single `brief_url`, the same
+  list goes in a top-level `angles` field.
+
+  `POST /briefs/angles` with `{ "brief_url": "..." }` returns
+  `{ origin, chars, angles }` instantly, with no model call. Use it to see what
+  categories a brief will produce before sending any videos.
+
+  A link with `?tab=t.xxxx` reads that tab only; without it every tab of the
+  document is read as one brief. Briefs are fetched fresh on every job, so an
+  edited brief takes effect on the next run.
 - **Every angle the brief names is listed**, in the brief's order, even with
   no videos — "nobody used this concept" is part of the answer.
 - A video goes under its **dominant** angle (the one it fits most).
-  `"None of the brief's angles"` appears only when a video fits none of them.
+  `"Matched None"` appears only when a video fits none of them.
 - `unplaced` lists videos that failed (bad link, download error) and so have
   no angle. Show them; don't drop them silently.
 - The `videos` entries are the **same links you submitted**, character for

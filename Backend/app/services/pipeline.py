@@ -13,6 +13,7 @@ Read alongside `Phase 7/phases_1_to_7_BATCH.ipynb` cells 50, 51, 85 and 147.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -543,12 +544,140 @@ def angle_distribution(rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda d: (-d['dominant_for'], -d['videos']))
 
 
-NO_ANGLE = "None of the brief's angles"
+NO_ANGLE = 'Matched None'
+
+
+def _dominant_named(row: dict) -> Optional[str]:
+    """The named angle this video falls under, or None when it fits none."""
+    ca = row.get('creative_angle') or {}
+    dom = ca.get('dominant_angle')
+    return dom if dom and dom in (ca.get('named_angles') or []) else None
+
+
+def pick_followed_brief(per_brief: list[list[dict]]) -> list[dict]:
+    """Several briefs, one answer per video: the brief it actually followed.
+
+    A brand with two focus products has two briefs, and a video is made for
+    one of them. Each video was audited against every brief; this keeps the
+    audit of the brief the video matches and drops the others.
+
+    The order of preference is deliberate. FIRST, did it land on one of that
+    brief's named angles at all -- a video that fits a Lung Health concept and
+    none of the Colon Cleanse ones followed the Lung Health brief, whatever
+    the two scores say. THEN how much of it that angle accounts for, THEN the
+    score. An exact tie goes to the earlier brief, so the result does not
+    depend on anything but the input.
+
+    A VIDEO IS ONLY PLACED IF IT WAS JUDGED AGAINST EVERY BRIEF. If one
+    brief's audit of it failed -- a rate-limited model call, the job deadline
+    arriving between briefs -- then "it matched brief 1" may only mean brief
+    2 was never asked, and filing it would put a Colon Cleanse video under
+    Lung Health, or under Matched None, with a job that says `succeeded`. So
+    it is returned as not placed, saying which brief could not be judged, and
+    the caller re-runs it; the evidence is cached, so that is cheap.
+
+    A video that matches NO brief keeps its first audit and carries no brief
+    label: it followed neither, and naming the higher-scoring one would say
+    otherwise.
+    """
+    def strength(row: dict) -> tuple:
+        ca = row.get('creative_angle') or {}
+        dom = _dominant_named(row)
+        share = max((float(f.get('percent') or 0)
+                     for f in (ca.get('concept_fit') or [])
+                     if f.get('angle') == dom), default=0.0)
+        return (share, float((row.get('score') or {}).get('headline') or 0.0))
+
+    order: list[str] = []
+    by_video: dict[str, list[dict]] = {}
+    for rows in per_brief:
+        for r in rows:
+            key = str(r.get('video_hash') or r.get('source'))
+            if key not in by_video:
+                order.append(key)
+            by_video.setdefault(key, []).append(r)
+    out = []
+    for key in order:
+        cands = by_video[key]
+        bad = [c for c in cands if c.get('status') != 'ok']
+        if bad or len(cands) < len(per_brief):
+            why = '; '.join(
+                f'{c.get("brief_label") or "brief"}: '
+                f'{str(c.get("error") or c.get("status"))[:160]}'
+                for c in bad) or 'it is missing from one brief\'s results'
+            row = dict(cands[0])
+            row.update(
+                status='BRIEF_AUDIT_INCOMPLETE', brief_label=None,
+                error=f'not judged against every brief, so not placed '
+                      f'({why}). Send this video again.')
+            log.warning('%s: %s', row.get('source'), row['error'])
+            out.append(row)
+            continue
+        matched = [c for c in cands if _dominant_named(c)]
+        if matched:
+            best = max(matched, key=strength)    # max() keeps the first on a tie
+        else:
+            best = dict(cands[0])
+            best['brief_label'] = None
+        out.append(best)
+        log.info('%s: followed %r (%s)', best.get('source'),
+                 best.get('brief_label'), _dominant_named(best) or NO_ANGLE)
+        # The browsable copy in reports/ was last written by whichever brief
+        # ran last; put the chosen one there.
+        _shelve_report({'html_path': best.get('report_html'),
+                        'json_path': best.get('report_json')},
+                       str(best.get('source') or ''), best)
+    return out
+
+
+def _unsure(row: dict) -> Optional[str]:
+    """Why a "Matched None" might not be a real one.
+
+    "Fits none of the angles" is a finding. "Could not tell" is not, and both
+    arrive as a video with no dominant angle: one that was never SEEN (the
+    vision pass failed) or whose angle judgement came back empty looks exactly
+    like one that was watched and fits nothing. Filed as Matched None, it is
+    never looked at again. So say which it is.
+    """
+    if row.get('visual_missing'):
+        return 'no visual evidence: the video was judged on speech and text only'
+    ca = row.get('creative_angle') or {}
+    if not (ca.get('concept_fit') or []):
+        return 'the angle judgement returned nothing for this video'
+    return None
+
+
+def placements(rows: list[dict]) -> list[dict]:
+    """One line per audited video: its link, its angle, and which brief.
+
+    `needs_review` is set on a Matched None that may not be one (see _unsure).
+    """
+    out = []
+    for r in rows:
+        if r.get('status') != 'ok':
+            continue
+        angle = _dominant_named(r)
+        why = None if angle else _unsure(r)
+        out.append({'video': r.get('url') or r.get('source') or r.get('video_id'),
+                    'angle': angle or NO_ANGLE,
+                    'brief': r.get('brief_label') if angle else None,
+                    'needs_review': bool(why), 'note': why})
+    return out
+
+
+_VIDEO_ID = re.compile(r'/(?:video|photo|v)/(\d{6,})')
+
+
+def _vid(url: Optional[str]) -> str:
+    m = _VIDEO_ID.search(url or '')
+    return m.group(1) if m else ''
 
 
 def angle_groups(rows: list[dict], submitted: Optional[list[str]] = None,
                  failed: Optional[list[str]] = None,
-                 job_error: Optional[str] = None
+                 job_error: Optional[str] = None,
+                 named_angles: Optional[list[str]] = None,
+                 resolved: Optional[dict] = None
                  ) -> tuple[list[dict], list[dict]]:
     """Each of the brief's named angles -> the links of the videos that fall
     under it, by dominant angle. Plus the videos that could not be placed.
@@ -560,7 +689,9 @@ def angle_groups(rows: list[dict], submitted: Optional[list[str]] = None,
     link that failed to download has no result row and would otherwise just
     vanish from the answer.
     """
-    named: list[str] = []
+    # The job's own list when it has one (several briefs: an angle of the
+    # brief no video followed appears on no row), else whatever the rows name.
+    named: list[str] = list(named_angles or [])
     for r in rows:
         for a in (r.get('creative_angle') or {}).get('named_angles') or []:
             if a not in named:
@@ -578,10 +709,17 @@ def angle_groups(rows: list[dict], submitted: Optional[list[str]] = None,
         # in one explicit bucket rather than vanishing from the answer.
         groups.setdefault(dom if dom in groups else NO_ANGLE, []).append(link)
     seen = {r.get('url') for r in rows}
+    # The same video sent as two different links downloads to ONE file, and
+    # the result row can carry only one of them. The other is not a failure
+    # and must not be reported as one.
+    by_id = {_vid(r.get('url')): r.get('url') for r in rows if _vid(r.get('url'))}
     failed_set = set(failed or [])
     for u in dict.fromkeys(submitted or []):     # de-duplicated, in order
         if u not in seen:
+            twin = by_id.get(_vid((resolved or {}).get(u) or u))
             unplaced.append({'video': u, 'reason': (
+                f'the same video as {twin}, which was sent in the same '
+                f'request; see that link for its angle' if twin else
                 'could not download this link' if u in failed_set else
                 # The whole job died (e.g. nothing downloadable, brief
                 # unreadable): its error is the real reason for every link.

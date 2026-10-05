@@ -176,6 +176,16 @@ class Settings:
         self.max_concurrent_jobs = _int('AUDITOR_MAX_CONCURRENT_JOBS', 1)
         self.job_timeout_s = _int('AUDITOR_JOB_TIMEOUT_S', 3 * 3600)
         self.keep_job_files_hours = _int('AUDITOR_KEEP_JOB_FILES_HOURS', 72)
+        # DELETE THE DOWNLOADED VIDEOS THE MOMENT A JOB IS OVER. On by
+        # default: this machine processes batch after batch for the hub, and
+        # at ~7 MB a video the 72-hour window above is gigabytes of clips
+        # nobody will open again. Nothing downstream needs the file once the
+        # job has its result -- frames, audio and transcripts live in
+        # artifacts/ (kept AUDITOR_KEEP_ARTIFACTS_DAYS, and what makes a
+        # re-run of the same video fast), and the reports are kept apart.
+        # The one cost: a later job for the same link downloads it again.
+        self.delete_videos_after_job = _flag(
+            'AUDITOR_DELETE_VIDEOS_AFTER_JOB', True)
 
         # ---- parallelism, stage by stage ----------------------------------
         # NOT a single global knob, because the stages fail differently.
@@ -354,6 +364,7 @@ class Settings:
                         'audit': self.audit_workers},
             'job_timeout_s': self.job_timeout_s,
             'keep_job_files_hours': self.keep_job_files_hours,
+            'delete_videos_after_job': self.delete_videos_after_job,
             'keep_artifacts_days': self.keep_artifacts_days,
             'ephemeral': self.ephemeral,
             'public_view': self.public_view,
