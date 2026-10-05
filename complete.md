@@ -4303,6 +4303,15 @@ key goes to the partner by direct message, never in the repo.
 - Stop `cloudflared` once Vercel uses the ngrok URL.
 - Open the PR.
 - The user pasted the ngrok authtoken in chat; rotate it if that log is shared.
+- **2026-10-05: the consumer of this API is WurxMediaHub**
+  (`C:\Users\Umar Ilyas\WurxMediaHub\RashidNazeer`, Vite + React + Supabase).
+  Surveyed read-only, nothing changed there. Its checkout is `main`, 130
+  commits behind `dev` where work happens. It is a browser-only SPA, so the
+  audit `x-api-key` must live in a Supabase Edge Function (template on dev:
+  `supabase/functions/euka`), not a Vercel proxy. dev already has a
+  `Creative angle testing` screen (vendored `CreativeAngles.jsx`) whose data
+  shape matches our `angles` output. Open decision: where the screen lives.
+  The frontend doc's Next.js examples do not apply to that app.
 - **2026-09-28:** the PC rebooted on 09-26 04:38. Docker came back by itself
   (restart: unless-stopped) but ngrok and the :8001 backend did not, so the
   public URL was down ~2.6 days until `tools\start_local.ps1` was run. It
