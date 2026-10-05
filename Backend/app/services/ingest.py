@@ -101,6 +101,17 @@ def download_videos(urls: list[str], *, cookies_file: str = '',
 
     resolved = {u: resolve_short_link(u) for u in urls}
 
+    # ONE DOWNLOAD PER VIDEO, however many links point at it. The same video
+    # sent as `…/video/123` and `…/video/123?lang=en` is one file, named by
+    # its id. Fetched twice in parallel, the two workers write the same file
+    # and whichever looks first finds it half-written, so a good link was
+    # logged "could not download" -- measured on a live job, not supposed.
+    # The first link of each video is fetched; the rest share its outcome.
+    leader: dict[str, str] = {}              # video id -> the link fetched
+    for u in urls:
+        leader.setdefault(_video_id(resolved[u]) or u, u)
+    to_fetch = list(dict.fromkeys(leader.values()))
+
     def _fetch(url: str) -> tuple[str, Optional[Path]]:
         target = resolved[url]
         try:
@@ -113,10 +124,12 @@ def download_videos(urls: list[str], *, cookies_file: str = '',
                     and (not vid or p.stem.startswith(vid))), None)
         return url, hit
 
-    pairs = run_parallel(list(urls), _fetch, workers=workers,
+    pairs = run_parallel(to_fetch, _fetch, workers=workers,
                          label='download',
                          on_error=lambda u, e: (u, None))
-    failed = [u for u, hit in pairs if hit is None]
+    got = {u: hit for u, hit in pairs}
+    failed = [u for u in urls
+              if got.get(leader[_video_id(resolved[u]) or u]) is None]
     for u in failed:
         log.warning('could not download: %s', u)
 

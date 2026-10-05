@@ -563,42 +563,79 @@ is `queued`/`running` and `phase` says where it is. When `status` is
   ```json
   "placements": [
     { "video": "https://www.tiktok.com/@a/video/1",
-      "angle": "3 Signs Your Lungs May Need Extra Support", "brief": "Lung Health" }
+      "angle": "3 Signs Your Lungs May Need Extra Support", "brief": "Lung Health",
+      "needs_review": false, "note": null },
+    { "video": "https://www.tiktok.com/@b/video/2",
+      "angle": "Matched None", "brief": null,
+      "needs_review": true,
+      "note": "no visual evidence: the video was judged on speech and text only" }
   ]
   ```
 
+  **`placements` is the list to file from**: one entry per video that was
+  judged. Three things in it matter:
+
+  - **`brief` is `null` for `Matched None`.** The video followed neither brief.
+  - **`needs_review: true`** marks a `Matched None` that may not be a real one:
+    the video could not be fully judged, and `note` says why. Send it again
+    before treating it as fitting no angle.
+  - **A video is only placed if it was judged against every brief.** If the
+    check against one brief failed (a rate limit, the job running out of time),
+    the video is **not** in `placements`. It is in `unplaced` with a reason
+    starting `not judged against every brief`, and the job carries a warning.
+    Send it again; the expensive part is cached.
+
   **Send each brief's `angles` too** when you already know them:
   `{ "label": "Lung Health", "url": "...", "angles": ["3 Signs Your Lungs May Need Extra Support", "..."] }`.
-  Videos are then placed under exactly those names. Without `angles` the
-  backend reads the brief's own numbered "Creative Concepts" list. Either way
-  the response says which it used, per brief, in `angles_from`: `given`,
-  `document`, or `notebook` (inferred because the brief has no numbered list;
-  treat those categories with suspicion). For a single `brief_url`, the same
-  list goes in a top-level `angles` field.
+  Videos are then placed under exactly those names. Names are trimmed and
+  de-duplicated, at most 12 per brief and 120 characters each. Without `angles`
+  the backend reads the brief's own numbered "Creative Concepts" list.
+
+  The response says which it used in `angles_from`. For one brief it is a single
+  word: `["given"]`, `["document"]` or `["notebook"]`. For several briefs each
+  entry is labelled: `["Lung Health: document", "Colon 14 Day Cleanse: given"]`.
+  `notebook` means the names were inferred because the brief has no numbered
+  list; the job warns, and those categories should be checked. For a single
+  `brief_url`, the list goes in a top-level `angles` field. (With `briefs`, a
+  top-level `angles` is refused with `422`: each brief carries its own.)
 
   `POST /briefs/angles` with `{ "brief_url": "..." }` returns
   `{ origin, chars, angles }` instantly, with no model call. Use it to see what
   categories a brief will produce before sending any videos.
 
   A link with `?tab=t.xxxx` reads that tab only; without it every tab of the
-  document is read as one brief. Briefs are fetched fresh on every job, so an
-  edited brief takes effect on the next run.
+  document is read as one brief. **A tab id that does not exist is refused**
+  (the job fails with `has no tab 't.xxxx'`): Google answers an unknown tab with
+  the document's first tab, which would otherwise audit one product's videos
+  against the other product's brief. Briefs are fetched fresh on every job, so
+  an edited brief takes effect on the next run.
 - **Every angle the brief names is listed**, in the brief's order, even with
   no videos — "nobody used this concept" is part of the answer.
-- A video goes under its **dominant** angle (the one it fits most).
-  `"Matched None"` appears only when a video fits none of them.
-- `unplaced` lists videos that failed (bad link, download error) and so have
-  no angle. Show them; don't drop them silently.
-- The `videos` entries are the **same links you submitted**, character for
-  character — short links (`vm.tiktok.com/...`, `tiktok.com/t/...`) included;
-  the backend resolves them internally and hands back what you sent.
-- **Every submitted link appears exactly once**: under one angle, or in
-  `unplaced`. So `sum of all angles + unplaced == your links` (duplicates
-  counted once).
-- `angles` is filled in when the job finishes. While `status` is `queued` or
-  `running`, don't read it — it is empty or partial.
-- If `status` is `failed`, read `error` (a sentence for a human); `angles`
-  will be empty and `unplaced` lists the links.
+- A video goes under its **dominant** angle (the one it fits most), or under
+  `"Matched None"` when it fits none of them.
+- `unplaced` lists the links that have no angle, each with its reason: the
+  link could not be downloaded, the video could not be judged against every
+  brief, a part of the audit failed, or it is the same video as another link in
+  the request. Show them; don't drop them silently.
+- **Send each video once.** Two links to the same video (`…/video/123` and
+  `…/video/123?lang=en`) are one video: it is downloaded once, the first link
+  gets the angle, and the other comes back in `unplaced` as
+  `the same video as <first link>`. Match results to your own records by the
+  TikTok video id, not by comparing link text.
+- Links come back as you sent them, short links (`vm.tiktok.com/...`,
+  `tiktok.com/t/...`) included. Every link you sent appears once: under an
+  angle or in `unplaced`.
+- **Read `angles`, `placements` and `unplaced` only when `status` is
+  `succeeded`, `partial` or `failed`.** While a job runs, `angles` already lists
+  the brief's angle names with empty lists, and `placements`, `unplaced` and
+  `completed_videos` are empty; none of that is a result yet. For progress use
+  `status`, `phase`, `requested_videos`, `downloaded_videos` and `elapsed_s`.
+- If `status` is `failed`, read `error` (a sentence for a human). `angles`
+  lists the names with nothing under them and `unplaced` lists the links.
+- **Downloaded videos are deleted as soon as a job is over**
+  (`AUDITOR_DELETE_VIDEOS_AFTER_JOB`, on by default). Sending the same link
+  again downloads it again, but the frames, audio and transcript are kept for
+  30 days, so a repeat is much faster than a first run.
 
 **Scores, verdicts and the HTML reports stay on Umar's machine.** Through the
 public URL, `results` is always `[]`, `brief` is `null`, and

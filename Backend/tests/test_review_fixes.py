@@ -305,3 +305,28 @@ def test_the_public_view_gives_placements_and_nothing_else(client):
     assert body['angles_from'] == ['Lung: given']
     # nothing that is the report's business
     assert '88' not in str(body['placements']) and body['brief'] is None
+
+def test_one_download_per_video_however_many_links(tmp_path, monkeypatch):
+    """Two links to one video were fetched in parallel into the same file, and
+    one was logged "could not download". Each video is fetched once and every
+    link to it shares the outcome."""
+    from auditor import runtime
+    ns = runtime.load()
+    calls = []
+
+    def fake_download(urls, verbose=False):
+        calls.append(urls[0])
+        vid = ingest._video_id(urls[0])
+        if vid != '7000000000000000099':          # that one is "deleted"
+            (tmp_path / f'{vid}.mp4').write_bytes(b'x' * 64)
+
+    monkeypatch.setitem(ns, 'download_videos', fake_download)
+    monkeypatch.setitem(ns, 'DIRS', {**ns['DIRS'], 'inbox': tmp_path})
+    a = 'https://www.tiktok.com/@c/video/7000000000000000011'
+    twin = a + '?lang=en'
+    b = 'https://www.tiktok.com/@c/video/7000000000000000022'
+    dead = 'https://www.tiktok.com/@c/video/7000000000000000099'
+    out = ingest.download_videos([a, twin, b, dead, dead + '?x=1'], workers=4)
+    assert sorted(calls) == sorted([a, b, dead])      # three videos, three fetches
+    assert out['failed_urls'] == [dead, dead + '?x=1']
+    assert len(out['downloaded']) == 2
