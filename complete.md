@@ -4312,6 +4312,19 @@ key goes to the partner by direct message, never in the repo.
   `Creative angle testing` screen (vendored `CreativeAngles.jsx`) whose data
   shape matches our `angles` output. Open decision: where the screen lives.
   The frontend doc's Next.js examples do not apply to that app.
+- **2026-10-05, INTEGRATION PLAN (agreed direction, NOT started; waiting for the
+  user's sheet of briefs):** a 'Categorise new videos' button per brand in
+  WurxMediaHub's angle-testing screen. Supabase side: `wurxbase.brand_briefs`
+  (brand -> brief link, loaded from the user's sheet), a per-video queue/ledger
+  table, an Edge Function holding the audit URL + key, and a cron-ticked worker
+  (pattern: `euka-ads-sync`) that sends 5 videos at a time to this machine,
+  polls the job, then files each link under its angle in the right
+  `Brand::YYYY-MM` row of `wurxbase.activity_logs` (create the angle if
+  missing, never move a video a person filed, keep typed figures, honour the
+  revision check). This repo's part: delete downloaded videos as soon as a job
+  finishes (today they sit in `jobs/<id>/inbox` for 72 h). Blockers: no dev
+  credentials/env for WurxMediaHub on this machine; Paid Collabs has no brands
+  table (brand is a name on `wurxbase.creators`).
 - **2026-10-05, the WurxMediaHub angle-testing screen** (`/admin/collabs/reporting`,
   read from `origin/dev`; the live page needs a staff login): staff pick a
   brand + month, create angles by hand, file that month's TikTok links from a
