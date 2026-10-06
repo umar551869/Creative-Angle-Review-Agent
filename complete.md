@@ -4350,6 +4350,34 @@ key goes to the partner by direct message, never in the repo.
 **Paused by the user mid-work on 2026-10-06 ("I will continue from here
 tomorrow"). Start by reading this section.**
 
+**UPDATE 5, 2026-10-07: THE INTEGRATION IS BUILT.** WurxMediaHub commit
+`48ad4ff` on `feature/creative-angle-auto-categorise`, **committed but NOT
+pushed** (Umar: "donot push anything on github for now"). 2,546 lines across 14
+files: the queue and batch tables, two Edge Functions, the provider client, the
+filer, the button with its progress ring, a 43-check verify script, and docs.
+
+Proven here, not assumed: `pnpm build` passes, `pnpm verify:angles-categorise`
+passes 43 checks, the patch script is idempotent, isolation passes, and the
+exact request the worker sends was run against the LIVE backend with a
+two-brief brand, which answered `angles_from = ['Colon 14 Day Cleanse: given',
+'Lung Health: given']` and terminal placements in the shape the worker reads.
+
+**No Docker rebuild was needed**: the running image `447c47bf89dc` already
+contains every backend change (verified by grepping the container, not by
+timestamps).
+
+**Two files in that repo are NOT mine and were deliberately left unstaged**:
+`scripts/check-product-band.mjs` and `src/vendor/wurxbase/WurxUI.jsx` carry
+somebody else's product-band work dated 2026-10-07. Someone ran another session
+in that folder.
+
+**It does nothing until it is deployed, and every step fails quietly**: both
+migrations, the `AUDIT_API_URL` / `AUDIT_API_KEY` /
+`COLLAB_ANGLES_SYNC_SECRET` secrets, the two vault entries, and both
+functions. "Turning the feature on" in `docs/CREATIVE_ANGLE_AUTOMATION.md`
+has the commands. Still blocked on Umar's Supabase account not being in the
+Wurx Media org.
+
 **UPDATE 4, PAUSED 2026-10-06 ~22:00, mid-build of the Categorise button.**
 
 Umar sent a screenshot of the live angle-testing screen and asked for the
