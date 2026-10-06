@@ -4350,6 +4350,28 @@ key goes to the partner by direct message, never in the repo.
 **Paused by the user mid-work on 2026-10-06 ("I will continue from here
 tomorrow"). Start by reading this section.**
 
+**UPDATE 3, 2026-10-06 evening. THE BACKEND IS NOW DEPLOYED.** Docker image
+`447c47bf89dc` is live on :8000 behind the ngrok URL: `/ready` clean,
+`delete_videos_after_job=true`, `/briefs/angles` answers through the tunnel,
+an unknown tab is refused, no key gives 401. Items 1-4 of `NOT DONE in this
+repo` are all DONE. 237 tests pass.
+
+WurxMediaHub is at `6049397` (3 commits, still LOCAL): the briefs sheet was
+re-read and now holds **16 briefs for 14 brands**, plus an `aliases` column
+and the 14 review design rules in the plan doc. Hand-off patches and the PR
+text are in `C:\Users\Umar Ilyas\WurxMediaHub\`.
+
+**STILL BLOCKED, and these are the only blockers left:**
+- **Cannot push.** The repo is public to READ, but `git push` is denied to
+  `umar551869`. Rashid must add that account as a collaborator. No PR until
+  then.
+- **Cannot apply the migration.** `RashidNazeer\.env` has the dev Supabase
+  URL and publishable key only; changing the schema needs a Supabase access
+  token and the dev DB password.
+- **Sheet fixes needed from the user:** Klassy Network's link is Kenashii's
+  document (no row stored); Cutler Nutritions' document is empty; Aqua Sonic,
+  Inno Supps and Irwin Naturals have no link.
+
 **UPDATE, second pause, 2026-10-06 about 02:30.** Since the first pause:
 
 - Job `ff5a11e74dec4f15` was read and is correct (5 angles, Matched None with
