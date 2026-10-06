@@ -4362,9 +4362,11 @@ and the 14 review design rules in the plan doc. Hand-off patches and the PR
 text are in `C:\Users\Umar Ilyas\WurxMediaHub\`.
 
 **STILL BLOCKED, and these are the only blockers left:**
-- **Cannot push.** The repo is public to READ, but `git push` is denied to
-  `umar551869`. Rashid must add that account as a collaborator. No PR until
-  then.
+- ~~Cannot push~~ **DONE 2026-10-06**: Rashid invited umar551869 and the
+  invitation was accepted, so the branch is on GitHub, authored
+  `RashidNazeer <wurxmedia@gmail.com>`. The PR has NOT been opened yet:
+  https://github.com/RashidNazeer/WurxMediaHub/compare/dev...feature/creative-angle-auto-categorise?expand=1
+  with the text from `C:\Users\Umar Ilyas\WurxMediaHub\PR_creative-angle-auto-categorise.md`.
 - **Cannot apply the migration.** `RashidNazeer\.env` has the dev Supabase
   URL and publishable key only; changing the schema needs a Supabase access
   token and the dev DB password.
