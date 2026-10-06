@@ -4350,6 +4350,48 @@ key goes to the partner by direct message, never in the repo.
 **Paused by the user mid-work on 2026-10-06 ("I will continue from here
 tomorrow"). Start by reading this section.**
 
+**UPDATE 4, PAUSED 2026-10-06 ~22:00, mid-build of the Categorise button.**
+
+Umar sent a screenshot of the live angle-testing screen and asked for the
+**Categorise button with a CIRCULAR PROGRESS BAR around it, minimal and in the
+app's theme**. Nothing of that is built yet. What was established first:
+
+- **The brand in Paid Collabs is `Biostime`**, not `Biostime Shop US`
+  (the brand chooser on screen reads "Biostime 82"). The migration as pushed is
+  still CORRECT: the row is `Biostime Shop US` with `aliases = {Biostime}`,
+  and the lookup checks aliases, so it matches. No change needed.
+- That brand already has **4 hand-made angles over 82 September videos**, last
+  saved by "khushi". So the filing code must merge into existing angles, never
+  replace them.
+- **The seam for our UI.** `scripts/wurxbase-patches.mjs` hard-codes
+  `FILE = 'src/vendor/wurxbase/WurxUI.jsx'` and must be generalised before a
+  hook can live in `CreativeAngles.jsx` (build-order step 1a). Our code goes
+  in `src/routes/admin/*.tsx` and is imported into the vendored file inside a
+  `WURX-ADDED ... WURX-END` fence; the model to copy is
+  `src/routes/admin/collab-ad-figures.tsx` into `WurxUI.jsx`.
+- **Where the button goes:** the header `cx-h-r` of `CreativeAngles.jsx`,
+  beside Import and New angle. Their styles are `.cx-new` (44px pill,
+  `var(--wx-surface-3)`, hovering to `var(--wx-accent)`) and `.cx-import`
+  in `src/vendor/wurxbase/paidcollabs.css`; ours belong in
+  `src/routes/admin/wurxbase-overrides.css`.
+- **Toolchain now works here.** pnpm 11.17.0 installed and `pnpm install`
+  done, so `pnpm build` / `pnpm typecheck` CAN be run from this machine.
+  Supabase CLI 2.119.0 installed at `%USERPROFILE%\.supabase\bin` and on PATH.
+- **Supabase: Umar's account cannot reach the dev project** (403, not a
+  member of the Wurx Media org), so **Rashid is applying the migration**.
+  `docs/CREATIVE_ANGLE_AUTOMATION.md` has the commands and the three checks;
+  the second check (brief brand vs `wurxbase.creators.brand`) is the one whose
+  result is needed back.
+- **The PR is still not opened.** The branch is pushed (5 commits, all authored
+  `RashidNazeer <wurxmedia@gmail.com>`); a branch is not a PR.
+
+**Next, when Umar says continue:** build in this order, which is steps 1a to 5
+of the plan doc: generalise the patch script; queue + batch tables; the Edge
+Function and the submit-then-poll worker; the filing into
+`wurxbase.activity_logs`; then the button and its circular progress. Design
+rules 1 to 14 in `docs/CREATIVE_ANGLE_AUTOMATION.md` are binding. Run
+`pnpm build` before claiming any of it works.
+
 **UPDATE 3, 2026-10-06 evening. THE BACKEND IS NOW DEPLOYED.** Docker image
 `447c47bf89dc` is live on :8000 behind the ngrok URL: `/ready` clean,
 `delete_videos_after_job=true`, `/briefs/angles` answers through the tunnel,
