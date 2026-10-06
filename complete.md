@@ -4350,6 +4350,28 @@ key goes to the partner by direct message, never in the repo.
 **Paused by the user mid-work on 2026-10-06 ("I will continue from here
 tomorrow"). Start by reading this section.**
 
+**UPDATE, second pause, 2026-10-06 about 02:30.** Since the first pause:
+
+- Job `ff5a11e74dec4f15` was read and is correct (5 angles, Matched None with
+  `brief: null`, the duplicate link reported as the same video, inbox deleted).
+- Fixed and tested: one download per video however many links point at it
+  (`ingest.download_videos`). 237 tests pass.
+- `Backend/docs/06_frontend_integration.md` now has the review fixes (item 3
+  below is DONE).
+- Committed and pushed: `8daab8d`.
+- **THE DOCKER REBUILD WAS STARTED AND NOT FINISHED.** `docker compose build`
+  was running in the background when the user paused. Docker's layer cache from
+  09-25 was gone, so it is re-downloading every package on a slow line (an hour
+  or more). The live container on :8000 is untouched and STILL RUNS THE OLD
+  CODE (image `aae03eb7b01e`, 09-25).
+
+**So the very next step is:** check `docker images backend-api` for an image
+dated 10-06 (or re-run `docker compose build` in `Backend`; see
+`Backend\docker_build.log`), then `docker compose up -d`, confirm `/ready`
+and `/config` (`delete_videos_after_job: true`), and run a two-brief job
+through the ngrok URL. Items 1 and 4 under NOT DONE below are still open; 2 and
+3 are done.
+
 ### What the user wants
 
 In WurxMediaHub (`C:\Users\Umar Ilyas\WurxMediaHub\RashidNazeer`, Vite + React +
